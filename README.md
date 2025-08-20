@@ -1,6 +1,6 @@
 # flutter_rust_http
 
-A Rust-based HTTP client for Flutter, matching all DIO features with better performance via Reqwest. Benchmarks will be provided later, this is just a initial release for now.
+A Rust-based HTTP client for Flutter, matching all DIO features with better performance based on Reqwest. Benchmarks will be provided later, this is just a initial release for now.
 
 ## Features
 - All DIO features (see pub.dev/packages/dio for list).

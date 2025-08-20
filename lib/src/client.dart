@@ -19,7 +19,7 @@ class FlutterRustHttp {
     if (_isInitialized) return;
 
     try {
-      // Verify the library can be loaded (but don't actually load it in main isolate)
+      // Verify the library can be loaded (but don't actually load it in main isolate, it block ui)
       final canLoadLibrary = await NativeLibrary.verifyLibrary();
       if (!canLoadLibrary) {
         throw Exception('Failed to verify native library');

@@ -65,11 +65,14 @@ class NativeLibrary {
 
   String executeRequest(String requestJson) {
     final requestPtr = requestJson.toNativeUtf8();
-    final responsePtr = _executeRequest(requestPtr);
-    final response = responsePtr.toDartString();
-    calloc.free(requestPtr);
-    _freeString(responsePtr);
-    return response;
+    try {
+      final responsePtr = _executeRequest(requestPtr);
+      final response = responsePtr.toDartString();
+      _freeString(responsePtr);
+      return response;
+    } finally {
+      calloc.free(requestPtr);
+    }
   }
 }
 

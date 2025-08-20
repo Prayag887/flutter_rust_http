@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HttpRequest {
     pub url: String,
     pub method: String,
@@ -19,7 +19,7 @@ pub struct HttpRequest {
     pub http3_only: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HttpResponse {
     pub status_code: u16,
     pub headers: HashMap<String, String>,
@@ -29,7 +29,7 @@ pub struct HttpResponse {
     pub elapsed_ms: u128,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HttpError {
     pub code: String,
     pub message: String,

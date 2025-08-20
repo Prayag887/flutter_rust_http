@@ -6,15 +6,28 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic;
 use std::ptr;
-use std::sync::Once;
+use std::sync::Arc;
 
-use anyhow::Result;
 use log::{error, info};
-use models::{HttpRequest, HttpResponse};
-use parking_lot::Mutex;
+use models::HttpRequest;
+use once_cell::sync::{Lazy, OnceCell};
 
-static INIT: Once = Once::new();
-static mut CLIENT: Option<Mutex<http_client::HttpClient>> = None;
+static CLIENT: OnceCell<Arc<http_client::HttpClient>> = OnceCell::new();
+static INIT: std::sync::Once = std::sync::Once::new();
+
+/// Global Tokio runtime (multi-threaded)
+static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    let thread_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8); // cap at 8 threads for mobile devices
+
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(thread_count)
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime")
+});
 
 #[no_mangle]
 pub extern "C" fn init_http_client() -> bool {
@@ -24,9 +37,8 @@ pub extern "C" fn init_http_client() -> bool {
             error!("Panic occurred: {:?}", panic_info);
         }));
 
-        unsafe {
-            CLIENT = Some(Mutex::new(http_client::HttpClient::new()));
-        }
+        let client = Arc::new(http_client::HttpClient::new());
+        CLIENT.set(client).unwrap();
 
         info!("HTTP client initialized successfully");
     });
@@ -54,27 +66,24 @@ pub extern "C" fn execute_request(request_json: *const c_char) -> *mut c_char {
         }
     };
 
-    let client = unsafe {
-        match &CLIENT {
-            Some(c) => c,
-            None => {
-                error!("HTTP client not initialized");
-                return ptr::null_mut();
-            }
+    let client = match CLIENT.get() {
+        Some(c) => c.clone(),
+        None => {
+            error!("HTTP client not initialized");
+            return ptr::null_mut();
         }
     };
 
-    let result = client.lock().execute_request(request);
+    // Run inside global runtime
+    let result = RUNTIME.block_on(async { client.execute_request(request).await });
 
     match result {
         Ok(response) => {
             match serde_json::to_string(&response) {
-                Ok(json) => {
-                    match CString::new(json) {
-                        Ok(c_string) => c_string.into_raw(),
-                        Err(_) => ptr::null_mut(),
-                    }
-                }
+                Ok(json) => match CString::new(json) {
+                    Ok(c_string) => c_string.into_raw(),
+                    Err(_) => ptr::null_mut(),
+                },
                 Err(e) => {
                     error!("Failed to serialize response: {}", e);
                     ptr::null_mut()

@@ -37,15 +37,27 @@ class _BenchmarkPageState extends State<BenchmarkPage>
   bool isRunning = false;
   double progress = 0.0;
   String currentTest = '';
+  String currentClient = '';
+  int currentIteration = 0;
+  int totalIterations = 0;
 
   late Dio dio;
   late FlutterRustHttp rustClient;
   late TabController _tabController;
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _pulseController = AnimationController(
+      duration: Duration(milliseconds: 1500),
+      vsync: this,
+    );
+    _pulseAnimation = Tween<double>(begin: 0.8, end: 1.2).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
     _initializeClients();
   }
 
@@ -70,6 +82,7 @@ class _BenchmarkPageState extends State<BenchmarkPage>
   @override
   void dispose() {
     _tabController.dispose();
+    _pulseController.dispose();
     dio.close();
     super.dispose();
   }
@@ -85,15 +98,20 @@ class _BenchmarkPageState extends State<BenchmarkPage>
     results['dio'] = [];
     results['rust'] = [];
 
-    int totalOperations = scenarios.fold(0, (sum, s) => sum + s.iterations * 2);
+    totalIterations = scenarios.fold(0, (sum, s) => sum + s.iterations * 2);
     int currentOperation = 0;
 
     for (final scenario in scenarios) {
       setState(() {
-        currentTest = 'Testing: ${scenario.name}';
+        currentTest = scenario.name;
       });
 
       for (int i = 0; i < scenario.iterations; i++) {
+        setState(() {
+          currentClient = 'Dio';
+          currentIteration = i + 1;
+        });
+
         // Benchmark Dio
         final dioStopwatch = Stopwatch()..start();
         try {
@@ -106,7 +124,13 @@ class _BenchmarkPageState extends State<BenchmarkPage>
 
         currentOperation++;
         setState(() {
-          progress = currentOperation / totalOperations;
+          progress = currentOperation / totalIterations;
+        });
+
+        await Future.delayed(Duration(milliseconds: 50)); // Small delay for UI updates
+
+        setState(() {
+          currentClient = 'Rust';
         });
 
         // Benchmark Rust HTTP
@@ -121,8 +145,10 @@ class _BenchmarkPageState extends State<BenchmarkPage>
 
         currentOperation++;
         setState(() {
-          progress = currentOperation / totalOperations;
+          progress = currentOperation / totalIterations;
         });
+
+        await Future.delayed(Duration(milliseconds: 50)); // Small delay for UI updates
       }
     }
 
@@ -157,12 +183,12 @@ class _BenchmarkPageState extends State<BenchmarkPage>
     ];
 
     final scenarioResults = <DetailedScenarioResult>[];
-    int totalOperations = scenarios.fold(0, (sum, s) => sum + s.iterations * 2);
+    totalIterations = scenarios.fold(0, (sum, s) => sum + s.iterations * 2);
     int currentOperation = 0;
 
     for (final scenario in scenarios) {
       setState(() {
-        currentTest = 'Comprehensive Test: ${scenario.name}';
+        currentTest = scenario.name;
       });
 
       final dioTimes = <int>[];
@@ -171,6 +197,11 @@ class _BenchmarkPageState extends State<BenchmarkPage>
       int rustErrors = 0;
 
       for (int i = 0; i < scenario.iterations; i++) {
+        setState(() {
+          currentClient = 'Dio';
+          currentIteration = i + 1;
+        });
+
         // Test Dio
         final dioStopwatch = Stopwatch()..start();
         try {
@@ -187,7 +218,13 @@ class _BenchmarkPageState extends State<BenchmarkPage>
 
         currentOperation++;
         setState(() {
-          progress = currentOperation / totalOperations;
+          progress = currentOperation / totalIterations;
+        });
+
+        await Future.delayed(Duration(milliseconds: 50));
+
+        setState(() {
+          currentClient = 'Rust';
         });
 
         // Test Rust HTTP
@@ -206,8 +243,10 @@ class _BenchmarkPageState extends State<BenchmarkPage>
 
         currentOperation++;
         setState(() {
-          progress = currentOperation / totalOperations;
+          progress = currentOperation / totalIterations;
         });
+
+        await Future.delayed(Duration(milliseconds: 50));
       }
 
       scenarioResults.add(DetailedScenarioResult(
@@ -241,12 +280,27 @@ class _BenchmarkPageState extends State<BenchmarkPage>
     }
   }
 
+  double _calculateVariance(List<int> values) {
+    if (values.length < 2) return 0.0;
+
+    final mean = values.reduce((a, b) => a + b) / values.length;
+    final sumSquaredDiffs = values
+        .map((value) => pow(value - mean, 2))
+        .reduce((a, b) => a + b);
+
+    return sumSquaredDiffs / values.length;
+  }
+
   void runQuickBenchmarks() async {
     setState(() {
       isRunning = true;
       progress = 0.0;
-      currentTest = 'Starting benchmark...';
+      currentTest = 'Initializing...';
+      currentClient = '';
+      currentIteration = 0;
     });
+
+    _pulseController.repeat(reverse: true);
 
     try {
       final result = await runQuickBenchmark();
@@ -255,13 +309,19 @@ class _BenchmarkPageState extends State<BenchmarkPage>
         isRunning = false;
         progress = 0.0;
         currentTest = '';
+        currentClient = '';
+        currentIteration = 0;
       });
+      _pulseController.stop();
     } catch (e) {
       setState(() {
         isRunning = false;
         progress = 0.0;
         currentTest = 'Error: $e';
+        currentClient = '';
+        currentIteration = 0;
       });
+      _pulseController.stop();
     }
   }
 
@@ -269,8 +329,12 @@ class _BenchmarkPageState extends State<BenchmarkPage>
     setState(() {
       isRunning = true;
       progress = 0.0;
-      currentTest = 'Starting comprehensive benchmark...';
+      currentTest = 'Initializing comprehensive test...';
+      currentClient = '';
+      currentIteration = 0;
     });
+
+    _pulseController.repeat(reverse: true);
 
     try {
       final result = await runComprehensiveBenchmark();
@@ -279,14 +343,277 @@ class _BenchmarkPageState extends State<BenchmarkPage>
         isRunning = false;
         progress = 0.0;
         currentTest = '';
+        currentClient = '';
+        currentIteration = 0;
       });
+      _pulseController.stop();
     } catch (e) {
       setState(() {
         isRunning = false;
         progress = 0.0;
         currentTest = 'Error: $e';
+        currentClient = '';
+        currentIteration = 0;
       });
+      _pulseController.stop();
     }
+  }
+
+  // Analysis methods
+  AnalysisData _generateQuickAnalysis() {
+    if (results.isEmpty) {
+      return AnalysisData(
+        winner: 'No data',
+        performanceGain: 0,
+        reliabilityDio: 0,
+        reliabilityRust: 0,
+        bestScenario: 'No data',
+        worstScenario: 'No data',
+        scenarioPerformance: {},
+        recommendations: ['Run benchmarks to see analysis'],
+        statistics: {},
+      );
+    }
+
+    final latestResult = results.last;
+    final dioFaster = latestResult.dioAverage < latestResult.rustAverage;
+    final winner = dioFaster ? 'Dio' : 'Rust';
+
+    final performanceGain = ((latestResult.dioAverage - latestResult.rustAverage).abs() /
+        (dioFaster ? latestResult.rustAverage : latestResult.dioAverage) * 100);
+
+    final reliabilityDio = latestResult.dioTimes.isNotEmpty
+        ? (latestResult.dioTimes.length / (latestResult.dioTimes.length + latestResult.dioErrors)) * 100
+        : 0.0;
+
+    final reliabilityRust = latestResult.rustTimes.isNotEmpty
+        ? (latestResult.rustTimes.length / (latestResult.rustTimes.length + latestResult.rustErrors)) * 100
+        : 0.0;
+
+    // Calculate variance/consistency
+    final dioVariance = _calculateVariance(latestResult.dioTimes);
+    final rustVariance = _calculateVariance(latestResult.rustTimes);
+    final moreConsistent = dioVariance < rustVariance ? 'Dio' : 'Rust';
+
+    // Generate dynamic recommendations
+    final recommendations = <String>[];
+
+    if (performanceGain > 50) {
+      recommendations.add('${winner} shows significant ${performanceGain.toStringAsFixed(1)}% performance advantage - consider switching for performance-critical apps');
+    } else if (performanceGain > 20) {
+      recommendations.add('${winner} has moderate ${performanceGain.toStringAsFixed(1)}% advantage - evaluate based on your specific use case');
+    } else {
+      recommendations.add('Performance difference is minimal (${performanceGain.toStringAsFixed(1)}%) - choose based on development preferences');
+    }
+
+    if ((reliabilityDio - reliabilityRust).abs() > 10) {
+      final moreReliable = reliabilityDio > reliabilityRust ? 'Dio' : 'Rust';
+      recommendations.add('${moreReliable} shows better reliability (${reliabilityDio > reliabilityRust ? reliabilityDio.toStringAsFixed(1) : reliabilityRust.toStringAsFixed(1)}% success rate)');
+    }
+
+    if (dioVariance < rustVariance * 0.5 || rustVariance < dioVariance * 0.5) {
+      recommendations.add('${moreConsistent} provides more consistent performance (lower latency variance)');
+    }
+
+    // Latency-based recommendations
+    final avgLatency = dioFaster ? latestResult.dioAverage : latestResult.rustAverage;
+    if (avgLatency > 2000000) { // > 2 seconds
+      recommendations.add('High latency detected - consider implementing request caching and offline-first architecture');
+    } else if (avgLatency > 500000) { // > 500ms
+      recommendations.add('Moderate latency - implement loading states and consider request batching');
+    }
+
+    return AnalysisData(
+      winner: winner,
+      performanceGain: performanceGain,
+      reliabilityDio: reliabilityDio,
+      reliabilityRust: reliabilityRust,
+      bestScenario: 'Quick test',
+      worstScenario: 'Quick test',
+      scenarioPerformance: {
+        'Dio Average': latestResult.dioAverage / 1000,
+        'Rust Average': latestResult.rustAverage / 1000,
+      },
+      recommendations: recommendations,
+      statistics: {
+        'Total Requests': latestResult.dioTimes.length + latestResult.rustTimes.length,
+        'Dio Variance': dioVariance,
+        'Rust Variance': rustVariance,
+        'Performance Ratio': dioFaster
+            ? latestResult.rustAverage / latestResult.dioAverage
+            : latestResult.dioAverage / latestResult.rustAverage,
+      },
+    );
+  }
+
+  AnalysisData _generateDetailedAnalysis() {
+    if (detailedResults.isEmpty) {
+      return AnalysisData(
+        winner: 'No data',
+        performanceGain: 0,
+        reliabilityDio: 0,
+        reliabilityRust: 0,
+        bestScenario: 'No data',
+        worstScenario: 'No data',
+        scenarioPerformance: {},
+        recommendations: ['Run comprehensive benchmarks for detailed analysis'],
+        statistics: {},
+      );
+    }
+
+    final latestDetailed = detailedResults.last;
+    final scenarioResults = latestDetailed.scenarioResults;
+
+    // Analyze each scenario
+    final scenarioPerformance = <String, double>{};
+    final scenarioWinners = <String, String>{};
+    double totalDioTime = 0;
+    double totalRustTime = 0;
+    int totalDioErrors = 0;
+    int totalRustErrors = 0;
+    int totalDioRequests = 0;
+    int totalRustRequests = 0;
+
+    String bestScenarioForDio = '';
+    String bestScenarioForRust = '';
+    double bestDioAdvantage = 0;
+    double bestRustAdvantage = 0;
+
+    for (final sr in scenarioResults) {
+      final dioAvg = sr.dioTimes.isEmpty ? double.infinity : sr.dioTimes.reduce((a, b) => a + b) / sr.dioTimes.length;
+      final rustAvg = sr.rustTimes.isEmpty ? double.infinity : sr.rustTimes.reduce((a, b) => a + b) / sr.rustTimes.length;
+
+      scenarioPerformance['${sr.scenario.name} (Dio)'] = dioAvg / 1000;
+      scenarioPerformance['${sr.scenario.name} (Rust)'] = rustAvg / 1000;
+
+      totalDioTime += dioAvg * sr.dioTimes.length;
+      totalRustTime += rustAvg * sr.rustTimes.length;
+      totalDioErrors += sr.dioErrors;
+      totalRustErrors += sr.rustErrors;
+      totalDioRequests += sr.dioTimes.length;
+      totalRustRequests += sr.rustTimes.length;
+
+      // Track best scenarios for each client
+      if (dioAvg < rustAvg) {
+        scenarioWinners[sr.scenario.name] = 'Dio';
+        final advantage = ((rustAvg - dioAvg) / rustAvg) * 100;
+        if (advantage > bestDioAdvantage) {
+          bestDioAdvantage = advantage;
+          bestScenarioForDio = sr.scenario.name;
+        }
+      } else {
+        scenarioWinners[sr.scenario.name] = 'Rust';
+        final advantage = ((dioAvg - rustAvg) / dioAvg) * 100;
+        if (advantage > bestRustAdvantage) {
+          bestRustAdvantage = advantage;
+          bestScenarioForRust = sr.scenario.name;
+        }
+      }
+    }
+
+    final overallDioAvg = totalDioRequests > 0 ? totalDioTime / totalDioRequests : 0;
+    final overallRustAvg = totalRustRequests > 0 ? totalRustTime / totalRustRequests : 0;
+    final overallWinner = overallDioAvg < overallRustAvg ? 'Dio' : 'Rust';
+    final overallGain = overallDioAvg < overallRustAvg
+        ? ((overallRustAvg - overallDioAvg) / overallRustAvg) * 100
+        : ((overallDioAvg - overallRustAvg) / overallDioAvg) * 100;
+
+    final reliabilityDio = totalDioRequests > 0
+        ? (totalDioRequests / (totalDioRequests + totalDioErrors)) * 100
+        : 0.0;
+    final reliabilityRust = totalRustRequests > 0
+        ? (totalRustRequests / (totalRustRequests + totalRustErrors)) * 100
+        : 0.0;
+
+    // Generate scenario-specific recommendations
+    final recommendations = <String>[];
+
+    recommendations.add('Overall: ${overallWinner} performs ${overallGain.toStringAsFixed(1)}% better across all scenarios');
+
+    if (bestScenarioForDio.isNotEmpty) {
+      recommendations.add('Dio excels at ${bestScenarioForDio} (${bestDioAdvantage.toStringAsFixed(1)}% advantage)');
+    }
+
+    if (bestScenarioForRust.isNotEmpty) {
+      recommendations.add('Rust excels at ${bestScenarioForRust} (${bestRustAdvantage.toStringAsFixed(1)}% advantage)');
+    }
+
+    // Analyze by request type
+    final getScenarios = scenarioResults.where((sr) => sr.scenario.method == 'GET').toList();
+    final postScenarios = scenarioResults.where((sr) => sr.scenario.method == 'POST').toList();
+
+    if (getScenarios.isNotEmpty && postScenarios.isNotEmpty) {
+      final getWinner = _getMethodWinner(getScenarios);
+      final postWinner = _getMethodWinner(postScenarios);
+
+      if (getWinner.isNotEmpty) recommendations.add('For GET requests: ${getWinner} performs better');
+      if (postWinner.isNotEmpty) recommendations.add('For POST requests: ${postWinner} performs better');
+    }
+
+    // Error analysis
+    if (totalDioErrors > totalRustErrors * 2) {
+      recommendations.add('Rust shows significantly better error handling (${totalRustErrors} vs ${totalDioErrors} errors)');
+    } else if (totalRustErrors > totalDioErrors * 2) {
+      recommendations.add('Dio shows significantly better error handling (${totalDioErrors} vs ${totalRustErrors} errors)');
+    }
+
+    // Payload size analysis
+    final imageScenarios = scenarioResults.where((sr) => sr.scenario.name.toLowerCase().contains('image')).toList();
+    final jsonScenarios = scenarioResults.where((sr) => sr.scenario.name.toLowerCase().contains('json')).toList();
+
+    if (imageScenarios.isNotEmpty && jsonScenarios.isNotEmpty) {
+      final imageWinner = _getMethodWinner(imageScenarios);
+      final jsonWinner = _getMethodWinner(jsonScenarios);
+
+      if (imageWinner.isNotEmpty) recommendations.add('For large payloads (images): ${imageWinner} is more efficient');
+      if (jsonWinner.isNotEmpty) recommendations.add('For JSON data: ${jsonWinner} handles better');
+    }
+
+    return AnalysisData(
+      winner: overallWinner,
+      performanceGain: overallGain,
+      reliabilityDio: reliabilityDio,
+      reliabilityRust: reliabilityRust,
+      bestScenario: overallWinner == 'Dio' ? bestScenarioForDio : bestScenarioForRust,
+      worstScenario: overallWinner == 'Dio' ? bestScenarioForRust : bestScenarioForDio,
+      scenarioPerformance: scenarioPerformance,
+      recommendations: recommendations,
+      statistics: {
+        'Total Scenarios': scenarioResults.length,
+        'Dio Wins': scenarioWinners.values.where((w) => w == 'Dio').length,
+        'Rust Wins': scenarioWinners.values.where((w) => w == 'Rust').length,
+        'Total Requests': totalDioRequests + totalRustRequests,
+        'Overall Dio Avg (ms)': overallDioAvg / 1000,
+        'Overall Rust Avg (ms)': overallRustAvg / 1000,
+      },
+    );
+  }
+
+  String _getMethodWinner(List<DetailedScenarioResult> scenarios) {
+    double totalDioTime = 0;
+    double totalRustTime = 0;
+    int dioCount = 0;
+    int rustCount = 0;
+
+    for (final sr in scenarios) {
+      if (sr.dioTimes.isNotEmpty) {
+        totalDioTime += sr.dioTimes.reduce((a, b) => a + b);
+        dioCount += sr.dioTimes.length;
+      }
+      if (sr.rustTimes.isNotEmpty) {
+        totalRustTime += sr.rustTimes.reduce((a, b) => a + b);
+        rustCount += sr.rustTimes.length;
+      }
+    }
+
+    if (dioCount == 0 && rustCount == 0) return '';
+    if (dioCount == 0) return 'Rust';
+    if (rustCount == 0) return 'Dio';
+
+    final dioAvg = totalDioTime / dioCount;
+    final rustAvg = totalRustTime / rustCount;
+
+    return dioAvg < rustAvg ? 'Dio' : 'Rust';
   }
 
   @override
@@ -330,10 +657,8 @@ class _BenchmarkPageState extends State<BenchmarkPage>
                 ),
               ),
               if (isRunning) ...[
-                SizedBox(height: 16),
-                LinearProgressIndicator(value: progress),
-                SizedBox(height: 8),
-                Text(currentTest, style: TextStyle(fontSize: 14)),
+                SizedBox(height: 20),
+                _buildLoadingIndicator(),
               ],
             ],
           ),
@@ -415,10 +740,8 @@ class _BenchmarkPageState extends State<BenchmarkPage>
                 ),
               ),
               if (isRunning) ...[
-                SizedBox(height: 16),
-                LinearProgressIndicator(value: progress),
-                SizedBox(height: 8),
-                Text(currentTest, style: TextStyle(fontSize: 14)),
+                SizedBox(height: 20),
+                _buildLoadingIndicator(),
               ],
             ],
           ),
@@ -478,9 +801,96 @@ class _BenchmarkPageState extends State<BenchmarkPage>
           Text('Performance Analysis & Recommendations',
               style: Theme.of(context).textTheme.headlineSmall),
           SizedBox(height: 16),
+          _buildRecommendationCard(),
+          SizedBox(height: 16),
           if (results.isNotEmpty) _buildQuickAnalysis(),
           SizedBox(height: 16),
           if (detailedResults.isNotEmpty) _buildDetailedAnalysis(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingIndicator() {
+    return Container(
+      padding: EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue.shade200),
+      ),
+      child: Column(
+        children: [
+          AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) {
+              return Transform.scale(
+                scale: _pulseAnimation.value,
+                child: Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    color: currentClient == 'Dio' ? Colors.blue : Colors.orange,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: (currentClient == 'Dio' ? Colors.blue : Colors.orange).withOpacity(0.3),
+                        blurRadius: 10,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    currentClient == 'Dio' ? Icons.http : Icons.flash_on,
+                    color: Colors.white,
+                    size: 30,
+                  ),
+                ),
+              );
+            },
+          ),
+          SizedBox(height: 16),
+          LinearProgressIndicator(
+            value: progress,
+            backgroundColor: Colors.grey.shade300,
+            valueColor: AlwaysStoppedAnimation<Color>(
+              currentClient == 'Dio' ? Colors.blue : Colors.orange,
+            ),
+          ),
+          SizedBox(height: 12),
+          Text(
+            currentTest,
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          if (currentClient.isNotEmpty) ...[
+            SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: currentClient == 'Dio' ? Colors.blue : Colors.orange,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    'Testing $currentClient',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+                SizedBox(width: 12),
+                Text(
+                  'Iteration $currentIteration / ${totalIterations ~/ 2}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+              ],
+            ),
+          ],
+          SizedBox(height: 8),
+          Text(
+            '${(progress * 100).toStringAsFixed(1)}% Complete',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
         ],
       ),
     );
@@ -507,6 +917,10 @@ class _BenchmarkPageState extends State<BenchmarkPage>
   Widget _buildScenarioResultCard(DetailedScenarioResult sr) {
     final dioAvg = sr.dioTimes.isEmpty ? 0 : sr.dioTimes.reduce((a, b) => a + b) / sr.dioTimes.length;
     final rustAvg = sr.rustTimes.isEmpty ? 0 : sr.rustTimes.reduce((a, b) => a + b) / sr.rustTimes.length;
+    final winner = dioAvg < rustAvg ? 'Dio' : 'Rust';
+    final advantage = dioAvg < rustAvg
+        ? ((rustAvg - dioAvg) / rustAvg * 100)
+        : ((dioAvg - rustAvg) / dioAvg * 100);
 
     return Container(
       margin: EdgeInsets.symmetric(vertical: 4),
@@ -514,11 +928,28 @@ class _BenchmarkPageState extends State<BenchmarkPage>
       decoration: BoxDecoration(
         border: Border.all(color: Colors.grey.shade300),
         borderRadius: BorderRadius.circular(8),
+        color: winner == 'Dio' ? Colors.blue.shade50 : Colors.orange.shade50,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(sr.scenario.name, style: TextStyle(fontWeight: FontWeight.bold)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(sr.scenario.name, style: TextStyle(fontWeight: FontWeight.bold)),
+              Container(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: winner == 'Dio' ? Colors.blue : Colors.orange,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$winner +${advantage.toStringAsFixed(1)}%',
+                  style: TextStyle(color: Colors.white, fontSize: 10),
+                ),
+              ),
+            ],
+          ),
           SizedBox(height: 4),
           Row(
             children: [
@@ -535,14 +966,34 @@ class _BenchmarkPageState extends State<BenchmarkPage>
     );
   }
 
+  Widget _buildRecommendationCard() {
+    final analysis = results.isNotEmpty ? _generateQuickAnalysis() : null;
+    final detailedAnalysis = detailedResults.isNotEmpty ? _generateDetailedAnalysis() : null;
 
-  Widget _buildQuickAnalysis() {
-    if (results.isEmpty) return SizedBox.shrink();
+    // Use the most comprehensive analysis available
+    final currentAnalysis = detailedAnalysis ?? analysis;
 
-    final latestResult = results.last;
-    final dioFaster = latestResult.dioAverage < latestResult.rustAverage;
-    final performanceDiff = ((latestResult.dioAverage - latestResult.rustAverage).abs() /
-        (dioFaster ? latestResult.dioAverage : latestResult.rustAverage) * 100);
+    if (currentAnalysis == null || currentAnalysis.recommendations.isEmpty) {
+      return Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.lightbulb, color: Colors.amber),
+                  SizedBox(width: 8),
+                  Text('Recommendations', style: Theme.of(context).textTheme.titleLarge),
+                ],
+              ),
+              SizedBox(height: 12),
+              Text('Run benchmarks to get personalized recommendations based on your performance data.'),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Card(
       child: Padding(
@@ -550,12 +1001,124 @@ class _BenchmarkPageState extends State<BenchmarkPage>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Quick Analysis', style: Theme.of(context).textTheme.titleLarge),
-            SizedBox(height: 12),
-            Text('${dioFaster ? "Dio" : "Rust"} performed ${performanceDiff.toStringAsFixed(1)}% better on average',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                Icon(Icons.lightbulb, color: Colors.amber),
+                SizedBox(width: 8),
+                Text('Recommendations', style: Theme.of(context).textTheme.titleLarge),
+              ],
+            ),
             SizedBox(height: 8),
-            Text('Reliability: Dio (${((latestResult.dioTimes.length / (latestResult.dioTimes.length + latestResult.dioErrors)) * 100).toStringAsFixed(1)}%) vs Rust (${((latestResult.rustTimes.length / (latestResult.rustTimes.length + latestResult.rustErrors)) * 100).toStringAsFixed(1)}%)'),
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: currentAnalysis.winner == 'Rust' ? Colors.orange.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: currentAnalysis.winner == 'Rust' ? Colors.orange.withOpacity(0.3) : Colors.blue.withOpacity(0.3),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.emoji_events,
+                    color: currentAnalysis.winner == 'Rust' ? Colors.orange : Colors.blue,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${currentAnalysis.winner} wins with ${currentAnalysis.performanceGain.toStringAsFixed(1)}% better performance',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: 12),
+            ...currentAnalysis.recommendations.map((rec) => Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.arrow_right, size: 16, color: Colors.blue),
+                  SizedBox(width: 8),
+                  Expanded(child: Text(rec)),
+                ],
+              ),
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuickAnalysis() {
+    if (results.isEmpty) return SizedBox.shrink();
+
+    final analysis = _generateQuickAnalysis();
+
+    return Card(
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Quick Analysis Results', style: Theme.of(context).textTheme.titleLarge),
+            SizedBox(height: 12),
+
+            // Performance summary
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Winner:', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: analysis.winner == 'Rust' ? Colors.orange : Colors.blue,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '${analysis.winner} (+${analysis.performanceGain.toStringAsFixed(1)}%)',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Reliability:'),
+                      Text('Dio: ${analysis.reliabilityDio.toStringAsFixed(1)}% | Rust: ${analysis.reliabilityRust.toStringAsFixed(1)}%'),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Performance Ratio:'),
+                      Text('${analysis.statistics['Performance Ratio']?.toStringAsFixed(2)}x'),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Total Requests:'),
+                      Text('${analysis.statistics['Total Requests']}'),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -565,20 +1128,131 @@ class _BenchmarkPageState extends State<BenchmarkPage>
   Widget _buildDetailedAnalysis() {
     if (detailedResults.isEmpty) return SizedBox.shrink();
 
+    final analysis = _generateDetailedAnalysis();
+
     return Card(
       child: Padding(
         padding: EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Detailed Analysis', style: Theme.of(context).textTheme.titleLarge),
+            Text('Comprehensive Analysis Results', style: Theme.of(context).textTheme.titleLarge),
             SizedBox(height: 12),
-            Text('Based on comprehensive testing across multiple scenarios, both clients show different strengths:'),
-            SizedBox(height: 8),
-            Text('• Dio excels in development productivity and ecosystem integration'),
-            Text('• Rust HTTP shows potential for lower-level performance optimization'),
-            Text('• Network conditions and payload size significantly impact relative performance'),
-            Text('• Error handling and reliability vary by scenario'),
+
+            // Scenario breakdown
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Scenario Breakdown:', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: analysis.winner == 'Rust' ? Colors.orange : Colors.blue,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          'Overall Winner: ${analysis.winner}',
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          padding: EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade100,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'Dio Wins: ${analysis.statistics['Dio Wins']}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Container(
+                          padding: EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade100,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'Rust Wins: ${analysis.statistics['Rust Wins']}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  if (analysis.bestScenario.isNotEmpty)
+                    Text('Best for ${analysis.winner}: ${analysis.bestScenario}'),
+                  if (analysis.worstScenario.isNotEmpty)
+                    Text('Challenging: ${analysis.worstScenario}'),
+                  SizedBox(height: 4),
+                  Text('Total Requests Tested: ${analysis.statistics['Total Requests']}'),
+                ],
+              ),
+            ),
+
+            SizedBox(height: 12),
+
+            // Performance metrics
+            if (analysis.scenarioPerformance.isNotEmpty) ...[
+              Text('Average Response Times by Scenario:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Column(
+                  children: analysis.scenarioPerformance.entries.map((entry) => Padding(
+                    padding: EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            entry.key,
+                            style: TextStyle(fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Container(
+                          padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: entry.key.contains('Dio') ? Colors.blue.shade100 : Colors.orange.shade100,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '${entry.value.toStringAsFixed(1)} ms',
+                            style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )).toList(),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -594,24 +1268,25 @@ class QuickResultsChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SfCartesianChart(
-      title: ChartTitle(text: 'Performance Comparison (μs)'),
+      title: ChartTitle(text: 'Performance Comparison'),
       primaryXAxis: CategoryAxis(),
       primaryYAxis: NumericAxis(
-        title: AxisTitle(text: 'Time (microseconds)'),
+        title: AxisTitle(text: 'Time (ms)'),
       ),
       series: <CartesianSeries<ChartData, String>>[
         ColumnSeries<ChartData, String>(
-          name: 'Average',
+          name: 'Response Time',
           dataSource: [
-            ChartData('Dio Avg', result.dioAverage.toDouble()),
-            ChartData('Rust Avg', result.rustAverage.toDouble()),
-            ChartData('Dio Median', result.dioMedian.toDouble()),
-            ChartData('Rust Median', result.rustMedian.toDouble()),
+            ChartData('Dio Avg', result.dioAverage.toDouble() / 1000),
+            ChartData('Rust Avg', result.rustAverage.toDouble() / 1000),
+            ChartData('Dio Median', result.dioMedian.toDouble() / 1000),
+            ChartData('Rust Median', result.rustMedian.toDouble() / 1000),
           ],
           xValueMapper: (ChartData data, _) => data.label,
           yValueMapper: (ChartData data, _) => data.value,
           dataLabelSettings: DataLabelSettings(isVisible: true),
-          color: Colors.blue,
+          pointColorMapper: (ChartData data, _) =>
+          data.label.contains('Dio') ? Colors.blue : Colors.orange,
         ),
       ],
       tooltipBehavior: TooltipBehavior(enable: true),
@@ -693,4 +1368,28 @@ class ChartData {
   final double value;
 
   ChartData(this.label, this.value);
+}
+
+class AnalysisData {
+  final String winner;
+  final double performanceGain;
+  final double reliabilityDio;
+  final double reliabilityRust;
+  final String bestScenario;
+  final String worstScenario;
+  final Map<String, double> scenarioPerformance;
+  final List<String> recommendations;
+  final Map<String, dynamic> statistics;
+
+  AnalysisData({
+    required this.winner,
+    required this.performanceGain,
+    required this.reliabilityDio,
+    required this.reliabilityRust,
+    required this.bestScenario,
+    required this.worstScenario,
+    required this.scenarioPerformance,
+    required this.recommendations,
+    required this.statistics,
+  });
 }

@@ -1,0 +1,31 @@
+name: flutter_rust_http
+description: A high-performance HTTP client using Rust via FFI
+version: 0.1.0
+homepage: https://github.com/Prayag887/flutter_rust_http
+
+environment:
+  sdk: ">=2.19.0 <3.32.0"
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.0.0
+  isolate: ^2.1.1
+  meta: ^1.7.0
+  collection: ^1.15.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.prayag.flutter_rust_http
+        pluginClass: FlutterRustHttpPlugin
+      ios:
+        pluginClass: FlutterRustHttpPlugin
+      linux:
+        pluginClass: FlutterRustHttpPlugin
+      windows:
+        pluginClass: FlutterRustHttpPlugin
+      macos:
+        pluginClass: FlutterRustHttpPlugin

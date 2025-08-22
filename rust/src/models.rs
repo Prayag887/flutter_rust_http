@@ -20,6 +20,29 @@ pub struct HttpRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EnhancedHttpRequest {
+    #[serde(flatten)]
+    pub base: HttpRequest,
+    pub response_type_schema: Option<String>,
+    pub parse_response: bool,
+    pub cache_key: Option<String>,
+    pub priority: RequestPriority,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum RequestPriority {
+    High,
+    Normal,
+    Low,
+}
+
+impl Default for RequestPriority {
+    fn default() -> Self {
+        RequestPriority::Normal
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HttpResponse {
     pub status_code: u16,
     pub headers: HashMap<String, String>,
@@ -27,6 +50,15 @@ pub struct HttpResponse {
     pub version: String,
     pub url: String,
     pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EnhancedHttpResponse {
+    #[serde(flatten)]
+    pub base: HttpResponse,
+    pub parsed_data: Option<serde_json::Value>,
+    pub cache_hit: bool,
+    pub compression_saved: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

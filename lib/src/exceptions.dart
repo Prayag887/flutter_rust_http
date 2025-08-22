@@ -1,13 +1,13 @@
-class HttpException implements Exception {
-  final String message;
-  final int? statusCode;
-  final dynamic response;
-
-  HttpException(this.message, {this.statusCode, this.response});
-
-  @override
-  String toString() => 'HttpException: $message${statusCode != null ? ' ($statusCode)' : ''}';
-}
+// class HttpException implements Exception {
+//   final String message;
+//   final int? statusCode;
+//   final dynamic response;
+//
+//   HttpException(this.message, {this.statusCode, this.response});
+//
+//   @override
+//   String toString() => 'HttpException: $message${statusCode != null ? ' ($statusCode)' : ''}';
+// }
 
 class NetworkException extends HttpException {
   NetworkException(String message) : super(message);
@@ -22,5 +22,14 @@ class ClientException extends HttpException {
 }
 
 class ServerException extends HttpException {
-  ServerException(String message, int statusCode) : super(message, statusCode: statusCode);
+  ServerException(String message, int statusCode) : super(message);
+}
+
+class HttpException implements Exception {
+  final String message;
+
+  HttpException(this.message);
+
+  @override
+  String toString() => 'HttpException: $message';
 }

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use simd_json::OwnedValue;
 use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct HttpRequest {
     pub url: String,
     pub method: String,
@@ -19,9 +19,8 @@ pub struct HttpRequest {
     pub http3_only: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct EnhancedHttpRequest {
-    #[serde(flatten)]
     pub base: HttpRequest,
     pub response_type_schema: Option<String>,
     pub parse_response: bool,
@@ -29,7 +28,7 @@ pub struct EnhancedHttpRequest {
     pub priority: RequestPriority,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub enum RequestPriority {
     High,
     Normal,
@@ -42,7 +41,7 @@ impl Default for RequestPriority {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status_code: u16,
     pub headers: HashMap<String, String>,
@@ -52,18 +51,17 @@ pub struct HttpResponse {
     pub elapsed_ms: u128,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct EnhancedHttpResponse {
-    #[serde(flatten)]
     pub base: HttpResponse,
-    pub parsed_data: Option<serde_json::Value>,
+    pub parsed_data: Option<OwnedValue>,
     pub cache_hit: bool,
     pub compression_saved: Option<usize>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct HttpError {
     pub code: String,
     pub message: String,
-    pub details: Option<serde_json::Value>,
+    pub details: Option<OwnedValue>,
 }

@@ -8,31 +8,100 @@ name = "flutter_rust_http"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-simd-json = { version = "0.9", features = ["serde", "alloc", "allow-non-simd"] }
-serde_json = "1.0"
-anyhow = "1.0"
-bytes = "1.0"
-futures = "0.3"
-once_cell = "1.10"
-parking_lot = "0.12"
-libc = "0.2"
-log = "0.4"
-env_logger = "0.9"
-lru-cache = "0.1.2"
-dashmap = "6.1.0"
-rayon = "1.8"
-lru = "0.16.0"
+# HTTP Client - optimized for mobile
+reqwest = { version = "0.11", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",  # Better for mobile than native-tls
+    "gzip",
+    "deflate",
+    "hickory-dns"  # Better DNS resolution for mobile
+] }
 
+# Async runtime - optimized for mobile constraints
+tokio = { version = "1.35", default-features = false, features = [
+    "rt-multi-thread",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+    "macros",
+    "signal"  # For proper shutdown handling
+] }
+
+# Serialization - mobile optimized
+serde = { version = "1.0", features = ["derive"] }  # Remove "rc" for mobile
+simd-json = { version = "0.14.1", features = ["serde_impl", "known-key"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Memory and performance - mobile optimized
+bytes = "1.6"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+once_cell = "1.19"
+parking_lot = "0.12"
+
+# System interfaces
+libc = "0.2"
+
+# Mobile-friendly logging
+log = "0.4"
+env_logger = { version = "0.10", optional = true }
+
+
+# Efficient caching for mobile
+lru = "0.12"
+dashmap = { version = "6.0", features = ["serde"] }
+
+# Mobile-specific memory allocator
 [target.'cfg(target_os = "android")'.dependencies]
-jni = { version = "0.19", default-features = false }
+jni = { version = "0.21", default-features = false }
+# Android system allocator is usually better than mimalloc
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# iOS system allocator is excellent, no need for custom allocator
 
 [build-dependencies]
-cbindgen = "0.24"
+cbindgen = "0.26"
 
-#[profile.release]
-#lto = true
-#codegen-units = 1
-#opt-level = 3
+# Mobile-specific feature flags
+[features]
+default = ["mobile-optimized"]
+mobile-optimized = ["compression", "dns-over-https"]
+compression = ["reqwest/gzip", "reqwest/deflate"]  # Remove brotli for mobile size
+dns-over-https = ["reqwest/hickory-dns"]
+logging = ["env_logger"]
+debug-mobile = ["logging"]
+env_logger = ["dep:env_logger"]
+
+
+# Mobile-optimized profiles
+[profile.release]
+lto = "thin"          # Fat LTO can be too slow for mobile builds
+codegen-units = 16    # Better for mobile build times
+opt-level = 3
+panic = "abort"       # Critical for mobile - smaller size
+strip = true
+overflow-checks = false
+debug = false         # No debug info in mobile release
+
+# iOS specific optimizations
+[profile.release-ios]
+inherits = "release"
+lto = "fat"           # iOS can handle fat LTO better
+codegen-units = 1
+
+# Android specific optimizations
+[profile.release-android]
+inherits = "release"
+opt-level = "s"       # Size optimization for Android APK
+lto = "thin"
+
+# Development profile for mobile testing
+[profile.dev]
+opt-level = 1         # Some optimization for mobile testing
+debug = 2
+overflow-checks = true
+lto = false

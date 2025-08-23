@@ -1,30 +1,41 @@
+use simd_json::OwnedValue;
+use simd_json::serde::from_owned_value;
 use anyhow::Result;
-use serde_json::Value;
+use serde::Serialize;
+use crate::models::{EnhancedHttpRequest, EnhancedHttpResponse};
 
-pub fn parse_request(json: &str) -> Result<crate::models::EnhancedHttpRequest> {
-    serde_json::from_str(json).map_err(Into::into)
+/// Parse a single request from JSON string using simd-json
+pub fn parse_request(json: &str) -> Result<EnhancedHttpRequest> {
+    let mut json_owned = json.to_string(); // make mutable copy
+    let value: OwnedValue = unsafe { simd_json::from_str(&mut json_owned)? }; // unsafe parse
+    let request: EnhancedHttpRequest = from_owned_value(value)?;             // deserialize
+    Ok(request)
 }
 
-pub fn serialize_response(response: &crate::models::EnhancedHttpResponse) -> Result<String> {
-    serde_json::to_string(response).map_err(Into::into)
+/// Parse a batch of requests from JSON string
+pub fn parse_batch_requests(json: &str) -> Result<Vec<EnhancedHttpRequest>> {
+    let mut json_owned = json.to_string();
+    let value: OwnedValue = unsafe { simd_json::from_str(&mut json_owned)? };
+    let requests: Vec<EnhancedHttpRequest> = from_owned_value(value)?; // SIMD deserialization
+    Ok(requests)
 }
 
-pub fn parse_json_with_schema(json: &str, schema: Option<&str>) -> Result<Value> {
-    if let Some(_schema_str) = schema {
-        validate_and_parse(json)
-    } else {
-        serde_json::from_str(json).map_err(Into::into)
-    }
+/// Parse raw bytes into simd-json OwnedValue
+pub fn parse_json_with_schema_bytes(json: &[u8], _schema: Option<&str>) -> Result<OwnedValue> {
+    let mut bytes = json.to_vec();
+    let value: OwnedValue = simd_json::to_owned_value(&mut bytes)?; // parse in place
+    Ok(value)
 }
 
-pub fn parse_batch_requests(
-    json: &str,
-) -> Result<Vec<crate::models::EnhancedHttpRequest>> {
-    serde_json::from_str(json).map_err(Into::into)
+/// Serialize response to bytes (serde_json still used for convenience)
+pub fn serialize_response_to_bytes(response: &EnhancedHttpResponse) -> Result<Vec<u8>> {
+    let mut writer = Vec::with_capacity(1024);
+    let mut ser = serde_json::Serializer::new(&mut writer);
+    response.serialize(&mut ser)?; // requires `use serde::Serialize`
+    Ok(writer)
 }
 
-fn validate_and_parse(json: &str) -> Result<Value> {
-    // In production, you could validate with jsonschema crate
-    // For now, just parse normally
-    serde_json::from_str(json).map_err(Into::into)
+/// Serialize response to string
+pub fn serialize_response(response: &EnhancedHttpResponse) -> Result<String> {
+    Ok(serde_json::to_string(response)?)
 }

@@ -24,12 +24,18 @@ lru-cache = "0.1.2"
 dashmap = "6.1.0"
 rayon = "1.8"
 lru = "0.16.0"
+simd-json = "0.15"
+fxhash = "0.2.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.19", default-features = false }
 
 [build-dependencies]
 cbindgen = "0.24"
+
+[[bin]]
+name = "test_client"
+path = "src/test_client.rs"
 
 #[profile.release]
 #lto = true

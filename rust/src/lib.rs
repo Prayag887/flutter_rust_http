@@ -12,20 +12,11 @@ use std::sync::Arc;
 use log::{error, info};
 use models::EnhancedHttpRequest;
 use once_cell::sync::{Lazy, OnceCell};
+use futures::stream::{FuturesOrdered, StreamExt};
 
 static CLIENT: OnceCell<Arc<http_client::HttpClient>> = OnceCell::new();
 static INIT: std::sync::Once = std::sync::Once::new();
 
-// Thread pool for CPU-intensive JSON parsing
-//static PARSER_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
-//    rayon::ThreadPoolBuilder::new()
-//        .num_threads(2) // Limited threads for parsing
-//        .thread_name(|i| format!("json-parser-{}", i))
-//        .build()
-//        .unwrap()
-//});
-
-// Global Tokio runtime (multi-threaded)
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     let thread_count = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -39,12 +30,35 @@ static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
         .expect("Failed to create Tokio runtime")
 });
 
-fn create_error_response(message: &str) -> *mut c_char {
-    let error_json = format!("{{\"error\": \"{}\"}}", message);
-    match CString::new(error_json) {
-        Ok(c_string) => c_string.into_raw(),
-        Err(_) => ptr::null_mut(),
+#[repr(C)]
+pub struct ByteBuffer {
+    ptr: *mut u8,
+    length: usize,
+    capacity: usize,
+}
+
+impl ByteBuffer {
+    pub fn from_vec(mut vec: Vec<u8>) -> Self {
+        let ptr = vec.as_mut_ptr();
+        let length = vec.len();
+        let capacity = vec.capacity();
+        std::mem::forget(vec);
+        ByteBuffer { ptr, length, capacity }
     }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        unsafe { Vec::from_raw_parts(self.ptr, self.length, self.capacity) }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn free_byte_buffer(buffer: ByteBuffer) {
+    drop(buffer.into_vec());
+}
+
+fn create_error_response_bytes(message: &str) -> ByteBuffer {
+    let error_json = format!("{{\"error\": \"{}\"}}", message);
+    ByteBuffer::from_vec(error_json.into_bytes())
 }
 
 #[no_mangle]
@@ -65,23 +79,22 @@ pub extern "C" fn init_http_client() -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn execute_request(request_json: *const c_char) -> *mut c_char {
-    let request_str = unsafe {
+pub extern "C" fn execute_request_bytes(request_json: *const c_char) -> ByteBuffer {
+    let request_cstr = unsafe {
         if request_json.is_null() {
-            return create_error_response("Null pointer provided for request");
+            return create_error_response_bytes("Null pointer provided for request");
         }
-        match CStr::from_ptr(request_json).to_str() {
-            Ok(s) => s,
-            Err(_) => return create_error_response("Invalid UTF-8 in request JSON"),
-        }
+        CStr::from_ptr(request_json)
     };
 
-    // Use simd-json for faster parsing if available
-    let request: EnhancedHttpRequest = match parser::parse_request(request_str) {
+    let request_bytes = request_cstr.to_bytes();
+    let mut request_copy = request_bytes.to_vec();
+
+    let request: EnhancedHttpRequest = match simd_json::from_slice(&mut request_copy) {
         Ok(req) => req,
         Err(e) => {
             error!("Failed to parse request: {}", e);
-            return create_error_response(&format!("Failed to parse request: {}", e));
+            return create_error_response_bytes(&format!("Failed to parse request: {}", e));
         }
     };
 
@@ -89,53 +102,48 @@ pub extern "C" fn execute_request(request_json: *const c_char) -> *mut c_char {
         Some(c) => c.clone(),
         None => {
             error!("HTTP client not initialized");
-            return create_error_response("HTTP client not initialized");
+            return create_error_response_bytes("HTTP client not initialized");
         }
     };
 
-    // Run inside global runtime
     let result = RUNTIME.block_on(async {
         client.execute_enhanced_request(request).await
     });
 
     match result {
         Ok(response) => {
-            // Use faster serialization
-            match parser::serialize_response(&response) {
-                Ok(json) => match CString::new(json) {
-                    Ok(c_string) => c_string.into_raw(),
-                    Err(_) => create_error_response("Failed to create C string from response"),
-                },
+            match simd_json::to_vec(&response) {
+                Ok(bytes) => ByteBuffer::from_vec(bytes),
                 Err(e) => {
                     error!("Failed to serialize response: {}", e);
-                    create_error_response(&format!("Failed to serialize response: {}", e))
+                    create_error_response_bytes(&format!("Failed to serialize response: {}", e))
                 }
             }
         }
         Err(e) => {
             error!("Request failed: {}", e);
-            create_error_response(&format!("Request failed: {}", e))
+            create_error_response_bytes(&format!("Request failed: {}", e))
         }
     }
 }
 
 #[no_mangle]
-pub extern "C" fn execute_batch_requests(requests_json: *const c_char) -> *mut c_char {
-    let requests_str = unsafe {
+pub extern "C" fn execute_batch_requests_bytes(requests_json: *const c_char) -> ByteBuffer {
+    let requests_cstr = unsafe {
         if requests_json.is_null() {
-            return create_error_response("Null pointer provided for batch requests");
+            return create_error_response_bytes("Null pointer provided for batch requests");
         }
-        match CStr::from_ptr(requests_json).to_str() {
-            Ok(s) => s,
-            Err(_) => return create_error_response("Invalid UTF-8 in batch requests JSON"),
-        }
+        CStr::from_ptr(requests_json)
     };
 
-    let requests: Vec<EnhancedHttpRequest> = match parser::parse_batch_requests(requests_str) {
+    let requests_bytes = requests_cstr.to_bytes();
+    let mut requests_copy = requests_bytes.to_vec();
+
+    let requests: Vec<EnhancedHttpRequest> = match simd_json::from_slice(&mut requests_copy) {
         Ok(reqs) => reqs,
         Err(e) => {
             error!("Failed to parse batch requests: {}", e);
-            return create_error_response(&format!("Failed to parse batch requests: {}", e));
+            return create_error_response_bytes(&format!("Failed to parse batch requests: {}", e));
         }
     };
 
@@ -143,44 +151,56 @@ pub extern "C" fn execute_batch_requests(requests_json: *const c_char) -> *mut c
         Some(c) => c.clone(),
         None => {
             error!("HTTP client not initialized");
-            return create_error_response("HTTP client not initialized");
+            return create_error_response_bytes("HTTP client not initialized");
         }
     };
 
-    // Execute all requests concurrently
     let results = RUNTIME.block_on(async {
-        let futures: Vec<_> = requests
-            .into_iter()
-            .map(|req| {
-                let client = client.clone();
-                async move {
-                    match client.execute_enhanced_request(req).await {
-                        Ok(response) => serde_json::to_value(response).ok(),
-                        Err(e) => {
-                            error!("Request failed in batch: {}", e);
-                            None
-                        }
-                    }
-                }
-            })
-            .collect();
+        let mut futures = FuturesOrdered::new();
+        for req in requests {
+            let client = client.clone();
+            futures.push(async move {
+                client.execute_enhanced_request(req).await
+            });
+        }
 
-        futures::future::join_all(futures).await
+        let mut collected = Vec::new();
+        while let Some(result) = futures.next().await {
+            collected.push(result);
+        }
+        collected
     });
 
-    // Filter out None values and serialize
-    let successful_results: Vec<_> = results.into_iter().filter_map(|r| r).collect();
+    let mut json_bytes = b"[".to_vec();
+    let mut first = true;
 
-    match serde_json::to_string(&successful_results) {
-        Ok(json) => match CString::new(json) {
-            Ok(c_string) => c_string.into_raw(),
-            Err(_) => create_error_response("Failed to create C string from batch response"),
-        },
-        Err(e) => {
-            error!("Failed to serialize batch results: {}", e);
-            create_error_response(&format!("Failed to serialize batch results: {}", e))
+    for result in results {
+        if !first {
+            json_bytes.push(b',');
+        }
+        first = false;
+
+        match result {
+            Ok(response) => {
+                match simd_json::to_vec(&response) {
+                    Ok(bytes) => json_bytes.extend(bytes),
+                    Err(e) => {
+                        error!("Failed to serialize response: {}", e);
+                        let error_json = format!("{{\"error\": \"{}\"}}", e);
+                        json_bytes.extend(error_json.bytes());
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Request failed: {}", e);
+                let error_json = format!("{{\"error\": \"{}\"}}", e);
+                json_bytes.extend(error_json.bytes());
+            }
         }
     }
+    json_bytes.push(b']');
+
+    ByteBuffer::from_vec(json_bytes)
 }
 
 #[no_mangle]

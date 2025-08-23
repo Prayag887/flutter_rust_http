@@ -30,11 +30,33 @@ android {
         versionName = flutter.versionName
     }
 
+    // Correct Kotlin DSL syntax for packaging options
+    packaging {
+        jniLibs {
+            pickFirsts.add("**/libc++_shared.so")
+            pickFirsts.add("**/libflutter_rust_http.so")
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // Ensure native libraries are included in release builds
+            isMinifyEnabled = false
+            isShrinkResources = false
+
+            // Optional: Add proguard rules if you need them
+            // proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
+    // Ensure JNI libraries are properly handled
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
         }
     }
 }

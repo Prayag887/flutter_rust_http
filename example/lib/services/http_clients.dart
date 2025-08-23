@@ -186,6 +186,7 @@ class DartParsedRustClient implements HttpClientInterface {
 
   static void ensureInitialized() {
     if (!_initialized || _httpClient == null) {
+      DartParsedRustClient.initialize(isolatePoolSize: 2);
       throw Exception('DartParsedRustClient must be initialized first');
     }
   }

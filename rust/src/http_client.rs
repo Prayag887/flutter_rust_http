@@ -16,7 +16,6 @@ use parking_lot::RwLock;
 use std::fmt;
 use std::num::NonZeroUsize;
 
-/// Common headers cache
 static COMMON_HEADERS: Lazy<HashMap<&'static str, HeaderName>> = Lazy::new(|| {
     let mut m = HashMap::with_capacity(16);
     for &key in &[
@@ -47,7 +46,7 @@ impl fmt::Debug for HttpClient {
 impl HttpClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .pool_max_idle_per_host(10) // mobile-optimized
+            .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(30))
             .tcp_keepalive(Duration::from_secs(30))
             .tcp_nodelay(true)
@@ -61,7 +60,7 @@ impl HttpClient {
             .unwrap();
 
         let cache = Arc::new(RwLock::new(LruCache::new(
-            NonZeroUsize::new(500).unwrap() // smaller for mobile memory
+            NonZeroUsize::new(500).unwrap()
         )));
 
         Self {
@@ -75,13 +74,11 @@ impl HttpClient {
         let cache_key = request.cache_key.clone()
             .unwrap_or_else(|| self.generate_cache_key(&request.base));
 
-        // Cache lookup for GET requests
         if request.base.method.eq_ignore_ascii_case("GET") {
             if let Some(cached) = self.get_cached(&cache_key) {
                 return Ok((*cached).clone());
             }
 
-            // Deduplication: Wait for in-flight request
             if let Some(receiver) = self.request_dedup.get(&cache_key) {
                 let rx = receiver.clone().borrow().clone();
                 if let Some(resp) = rx {
@@ -90,7 +87,6 @@ impl HttpClient {
             }
         }
 
-        // Deduplication channel
         let (tx, rx) = tokio::sync::watch::channel(None);
         self.request_dedup.insert(cache_key.clone(), Arc::new(rx));
 
@@ -145,7 +141,7 @@ impl HttpClient {
 
         let parsed_data = if request.parse_response {
             request.response_type_schema.as_deref()
-                .and_then(|schema| parser::parse_json_with_schema(&body_str, Some(schema)).ok())
+                .and_then(|schema| parser::parse_json_with_schema_bytes(&body_bytes, Some(schema)).ok())
         } else { None };
 
         let elapsed_ms = start_time.elapsed().as_millis();

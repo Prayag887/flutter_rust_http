@@ -18,3 +18,5 @@ struct ByteBuffer execute_request_bytes(const char *request_json);
 struct ByteBuffer execute_batch_requests_bytes(const char *requests_json);
 
 void free_string(char *ptr);
+
+struct ByteBuffer get_stats(void);

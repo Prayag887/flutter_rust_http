@@ -1,7 +1,5 @@
-// client.dart
 import 'dart:async';
 import 'dart:convert';
-import 'package:meta/meta.dart';
 import 'bindings.dart';
 import 'models.dart';
 
@@ -50,12 +48,10 @@ class FlutterRustHttp {
 
   factory FlutterRustHttp() => _instance;
 
-  static Future<void> initialize({int isolatePoolSize = 4, bool debugLogging = false}) async {
+  static Future<void> initialize({int isolatePoolSize = 4}) async {
     if (_isInitialized) return;
 
     try {
-      FFILogger.debugEnabled = debugLogging;
-
       final canLoadLibrary = await NativeLibrary.verifyLibrary();
       if (!canLoadLibrary) {
         throw Exception('Failed to verify native library');
@@ -95,7 +91,7 @@ class FlutterRustHttp {
         bool autoReferer = true,
         bool decompress = true,
         bool http3Only = false,
-        bool parseInRust = true,
+        bool parseInRust = true, // New flag for Rust-side parsing
       }) async {
     ensureInitialized();
 

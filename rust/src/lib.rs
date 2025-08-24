@@ -6,28 +6,36 @@ mod parser;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic;
-use std::ptr;
 use std::sync::Arc;
+use anyhow::anyhow;
 
 use log::{error, info};
 use models::EnhancedHttpRequest;
 use once_cell::sync::{Lazy, OnceCell};
-use futures::stream::{FuturesOrdered, StreamExt};
+use futures::stream::{FuturesUnordered, StreamExt};
+use tokio::sync::Semaphore;
+
+// Mobile-optimized constants
+const MAX_CONCURRENT: usize = 16;
+const MAX_BATCH: usize = 8;
 
 static CLIENT: OnceCell<Arc<http_client::HttpClient>> = OnceCell::new();
+static SEMAPHORE: OnceCell<Arc<Semaphore>> = OnceCell::new();
 static INIT: std::sync::Once = std::sync::Once::new();
 
+// Simple mobile runtime
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
-    let thread_count = std::thread::available_parallelism()
+    let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .min(8);
+        .min(6);
 
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(thread_count)
-        .enable_all()
+        .worker_threads(threads)
+        .enable_io()
+        .enable_time()
         .build()
-        .expect("Failed to create Tokio runtime")
+        .expect("Failed to create runtime")
 });
 
 #[repr(C)]
@@ -56,111 +64,110 @@ pub extern "C" fn free_byte_buffer(buffer: ByteBuffer) {
     drop(buffer.into_vec());
 }
 
-fn create_error_response_bytes(message: &str) -> ByteBuffer {
-    let error_json = format!("{{\"error\": \"{}\"}}", message);
-    ByteBuffer::from_vec(error_json.into_bytes())
+fn error_response(msg: &str) -> ByteBuffer {
+    let json = format!("{{\"error\":\"{}\"}}", msg);
+    ByteBuffer::from_vec(json.into_bytes())
 }
 
 #[no_mangle]
 pub extern "C" fn init_http_client() -> bool {
     INIT.call_once(|| {
         env_logger::init();
-        panic::set_hook(Box::new(|panic_info| {
-            error!("Panic occurred: {:?}", panic_info);
-        }));
+        panic::set_hook(Box::new(|info| error!("Panic: {}", info)));
 
         let client = Arc::new(http_client::HttpClient::new());
         CLIENT.set(client).unwrap();
 
-        info!("HTTP client initialized successfully");
-    });
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
+        SEMAPHORE.set(semaphore).unwrap();
 
+        info!("Mobile HTTP client initialized");
+    });
     true
 }
 
 #[no_mangle]
 pub extern "C" fn execute_request_bytes(request_json: *const c_char) -> ByteBuffer {
-    let request_cstr = unsafe {
-        if request_json.is_null() {
-            return create_error_response_bytes("Null pointer provided for request");
-        }
-        CStr::from_ptr(request_json)
-    };
+    if request_json.is_null() {
+        return error_response("Null pointer");
+    }
 
-    let request_bytes = request_cstr.to_bytes();
-    let mut request_copy = request_bytes.to_vec();
+    let request_str = unsafe { CStr::from_ptr(request_json) }.to_bytes();
+    let mut request_copy = request_str.to_vec();
 
     let request: EnhancedHttpRequest = match simd_json::from_slice(&mut request_copy) {
         Ok(req) => req,
-        Err(e) => {
-            error!("Failed to parse request: {}", e);
-            return create_error_response_bytes(&format!("Failed to parse request: {}", e));
-        }
+        Err(_) => return error_response("Parse error"),
     };
 
     let client = match CLIENT.get() {
         Some(c) => c.clone(),
-        None => {
-            error!("HTTP client not initialized");
-            return create_error_response_bytes("HTTP client not initialized");
-        }
+        None => return error_response("Not initialized"),
+    };
+
+    let semaphore = match SEMAPHORE.get() {
+        Some(s) => s.clone(),
+        None => return error_response("Not initialized"),
     };
 
     let result = RUNTIME.block_on(async {
-        client.execute_enhanced_request(request).await
+        if let Ok(_permit) = semaphore.acquire().await {
+            client.execute_enhanced_request(request).await
+        } else {
+            Err(anyhow::Error::msg("Rate limit"))
+        }
     });
 
     match result {
-        Ok(response) => {
-            match simd_json::to_vec(&response) {
-                Ok(bytes) => ByteBuffer::from_vec(bytes),
-                Err(e) => {
-                    error!("Failed to serialize response: {}", e);
-                    create_error_response_bytes(&format!("Failed to serialize response: {}", e))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Request failed: {}", e);
-            create_error_response_bytes(&format!("Request failed: {}", e))
-        }
+        Ok(response) => match simd_json::to_vec(&response) {
+            Ok(bytes) => ByteBuffer::from_vec(bytes),
+            Err(_) => error_response("Serialize error"),
+        },
+        Err(_) => error_response("Request failed"),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn execute_batch_requests_bytes(requests_json: *const c_char) -> ByteBuffer {
-    let requests_cstr = unsafe {
-        if requests_json.is_null() {
-            return create_error_response_bytes("Null pointer provided for batch requests");
-        }
-        CStr::from_ptr(requests_json)
-    };
+    if requests_json.is_null() {
+        return error_response("Null pointer");
+    }
 
-    let requests_bytes = requests_cstr.to_bytes();
-    let mut requests_copy = requests_bytes.to_vec();
+    let requests_str = unsafe { CStr::from_ptr(requests_json) }.to_bytes();
+    let mut requests_copy = requests_str.to_vec();
 
     let requests: Vec<EnhancedHttpRequest> = match simd_json::from_slice(&mut requests_copy) {
         Ok(reqs) => reqs,
-        Err(e) => {
-            error!("Failed to parse batch requests: {}", e);
-            return create_error_response_bytes(&format!("Failed to parse batch requests: {}", e));
-        }
+        Err(_) => return error_response("Parse error"),
     };
+
+    if requests.len() > MAX_BATCH {
+        return error_response("Batch too large");
+    }
 
     let client = match CLIENT.get() {
         Some(c) => c.clone(),
-        None => {
-            error!("HTTP client not initialized");
-            return create_error_response_bytes("HTTP client not initialized");
-        }
+        None => return error_response("Not initialized"),
+    };
+
+    let semaphore = match SEMAPHORE.get() {
+        Some(s) => s.clone(),
+        None => return error_response("Not initialized"),
     };
 
     let results = RUNTIME.block_on(async {
-        let mut futures = FuturesOrdered::new();
+        let mut futures = FuturesUnordered::new();
+
         for req in requests {
             let client = client.clone();
+            let semaphore = semaphore.clone();
+
             futures.push(async move {
-                client.execute_enhanced_request(req).await
+                if let Ok(_permit) = semaphore.acquire().await {
+                    client.execute_enhanced_request(req).await
+                } else {
+                    Err(anyhow::Error::msg("Rate limit"))
+                }
             });
         }
 
@@ -171,43 +178,36 @@ pub extern "C" fn execute_batch_requests_bytes(requests_json: *const c_char) -> 
         collected
     });
 
-    let mut json_bytes = b"[".to_vec();
-    let mut first = true;
+    let mut json = Vec::with_capacity(results.len() * 256);
+    json.push(b'[');
 
-    for result in results {
-        if !first {
-            json_bytes.push(b',');
-        }
-        first = false;
+    for (i, result) in results.into_iter().enumerate() {
+        if i > 0 { json.push(b','); }
 
         match result {
             Ok(response) => {
-                match simd_json::to_vec(&response) {
-                    Ok(bytes) => json_bytes.extend(bytes),
-                    Err(e) => {
-                        error!("Failed to serialize response: {}", e);
-                        let error_json = format!("{{\"error\": \"{}\"}}", e);
-                        json_bytes.extend(error_json.bytes());
-                    }
+                if simd_json::to_writer(&mut json, &response).is_err() {
+                    json.extend_from_slice(b"{\"error\":\"Serialize\"}");
                 }
             }
-            Err(e) => {
-                error!("Request failed: {}", e);
-                let error_json = format!("{{\"error\": \"{}\"}}", e);
-                json_bytes.extend(error_json.bytes());
-            }
+            Err(_) => json.extend_from_slice(b"{\"error\":\"Failed\"}"),
         }
     }
-    json_bytes.push(b']');
+    json.push(b']');
 
-    ByteBuffer::from_vec(json_bytes)
+    ByteBuffer::from_vec(json)
 }
 
 #[no_mangle]
 pub extern "C" fn free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
-        unsafe {
-            let _ = CString::from_raw(ptr);
-        }
+        unsafe { let _ = CString::from_raw(ptr); }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn get_stats() -> ByteBuffer {
+    let available = SEMAPHORE.get().map(|s| s.available_permits()).unwrap_or(0);
+    let stats = format!("{{\"available\":{},\"max\":{}}}", available, MAX_CONCURRENT);
+    ByteBuffer::from_vec(stats.into_bytes())
 }

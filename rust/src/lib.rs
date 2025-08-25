@@ -6,22 +6,23 @@ mod parser;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic;
-use std::sync::Arc;
-use anyhow::anyhow;
+use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 
+use anyhow::anyhow;
+use futures::stream::{FuturesUnordered, StreamExt};
 use log::{error, info};
 use models::EnhancedHttpRequest;
 use once_cell::sync::{Lazy, OnceCell};
-use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::Semaphore;
 
 // Mobile-optimized constants
-const MAX_CONCURRENT: usize = 16;
+const MAX_CONCURRENT: usize = 16; // hard cap enforced via lock-free atomics
 const MAX_BATCH: usize = 8;
 
 static CLIENT: OnceCell<Arc<http_client::HttpClient>> = OnceCell::new();
-static SEMAPHORE: OnceCell<Arc<Semaphore>> = OnceCell::new();
 static INIT: std::sync::Once = std::sync::Once::new();
+
+// Lock-free in-flight counter (no semaphore, no locks)
+static INFLIGHT: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
 
 // Simple mobile runtime
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
@@ -64,9 +65,14 @@ pub extern "C" fn free_byte_buffer(buffer: ByteBuffer) {
     drop(buffer.into_vec());
 }
 
+#[inline(always)]
 fn error_response(msg: &str) -> ByteBuffer {
-    let json = format!("{{\"error\":\"{}\"}}", msg);
-    ByteBuffer::from_vec(json.into_bytes())
+    let mut json = Vec::with_capacity(msg.len() + 12);
+    json.extend_from_slice(b"{\"error\":\"");
+    json.extend_from_slice(msg.as_bytes());
+    json.push(b'"');
+    json.push(b'}');
+    ByteBuffer::from_vec(json)
 }
 
 #[no_mangle]
@@ -75,68 +81,85 @@ pub extern "C" fn init_http_client() -> bool {
         env_logger::init();
         panic::set_hook(Box::new(|info| error!("Panic: {}", info)));
 
-        let client = Arc::new(http_client::HttpClient::new());
-        CLIENT.set(client).unwrap();
-
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
-        SEMAPHORE.set(semaphore).unwrap();
-
-        info!("Mobile HTTP client initialized");
+        CLIENT.set(Arc::new(http_client::HttpClient::new())).unwrap();
+        info!("Mobile HTTP client initialized (lock-free)");
     });
     true
 }
 
+// RAII guard: increments INFLIGHT on creation, decrements on drop.
+struct InFlightGuard;
+impl InFlightGuard {
+    #[inline(always)]
+    fn try_acquire() -> Option<Self> {
+        // Lock-free cap using CAS loop
+        loop {
+            let cur = INFLIGHT.load(Ordering::Relaxed);
+            if cur >= MAX_CONCURRENT { return None; }
+            if INFLIGHT
+                .compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            { return Some(InFlightGuard); }
+        }
+    }
+}
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn execute_request_bytes(request_json: *const c_char) -> ByteBuffer {
-    if request_json.is_null() {
-        return error_response("Null pointer");
-    }
+    if request_json.is_null() { return error_response("Null pointer"); }
 
-    let request_str = unsafe { CStr::from_ptr(request_json) }.to_bytes();
-    let mut request_copy = request_str.to_vec();
+    // simd_json requires &mut [u8]; we must copy the C string once.
+    let mut bytes = unsafe { CStr::from_ptr(request_json) }.to_bytes().to_vec();
 
-    let request: EnhancedHttpRequest = match simd_json::from_slice(&mut request_copy) {
+    let request: EnhancedHttpRequest = match simd_json::from_slice(&mut bytes) {
         Ok(req) => req,
         Err(_) => return error_response("Parse error"),
     };
 
     let client = match CLIENT.get() {
-        Some(c) => c.clone(),
+        Some(c) => Arc::clone(c),
         None => return error_response("Not initialized"),
     };
 
-    let semaphore = match SEMAPHORE.get() {
-        Some(s) => s.clone(),
-        None => return error_response("Not initialized"),
+    // Hard, lock-free cap without awaiting
+    let Some(_guard) = InFlightGuard::try_acquire() else {
+        return error_response("Rate limit");
     };
 
-    let result = RUNTIME.block_on(async {
-        if let Ok(_permit) = semaphore.acquire().await {
-            client.execute_enhanced_request(request).await
-        } else {
-            Err(anyhow::Error::msg("Rate limit"))
-        }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    RUNTIME.spawn(async move {
+        let result = client.execute_enhanced_request(request).await;
+        let _ = tx.send(result);
     });
 
+    let result = rx.blocking_recv().unwrap_or_else(|_| Err(anyhow!("Channel closed")));
+
     match result {
-        Ok(response) => match simd_json::to_vec(&response) {
-            Ok(bytes) => ByteBuffer::from_vec(bytes),
-            Err(_) => error_response("Serialize error"),
-        },
+        Ok(resp) => {
+            let mut buf = Vec::with_capacity(256);
+            if simd_json::to_writer(&mut buf, &resp).is_ok() {
+                ByteBuffer::from_vec(buf)
+            } else {
+                error_response("Serialize error")
+            }
+        }
         Err(_) => error_response("Request failed"),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn execute_batch_requests_bytes(requests_json: *const c_char) -> ByteBuffer {
-    if requests_json.is_null() {
-        return error_response("Null pointer");
-    }
+    if requests_json.is_null() { return error_response("Null pointer"); }
 
-    let requests_str = unsafe { CStr::from_ptr(requests_json) }.to_bytes();
-    let mut requests_copy = requests_str.to_vec();
+    let mut bytes = unsafe { CStr::from_ptr(requests_json) }.to_bytes().to_vec();
 
-    let requests: Vec<EnhancedHttpRequest> = match simd_json::from_slice(&mut requests_copy) {
+    let requests: Vec<EnhancedHttpRequest> = match simd_json::from_slice(&mut bytes) {
         Ok(reqs) => reqs,
         Err(_) => return error_response("Parse error"),
     };
@@ -146,55 +169,52 @@ pub extern "C" fn execute_batch_requests_bytes(requests_json: *const c_char) -> 
     }
 
     let client = match CLIENT.get() {
-        Some(c) => c.clone(),
+        Some(c) => Arc::clone(c),
         None => return error_response("Not initialized"),
     };
 
-    let semaphore = match SEMAPHORE.get() {
-        Some(s) => s.clone(),
-        None => return error_response("Not initialized"),
-    };
-
-    let results = RUNTIME.block_on(async {
-        let mut futures = FuturesUnordered::new();
+    let handle = RUNTIME.spawn(async move {
+        let mut futs = FuturesUnordered::new();
 
         for req in requests {
-            let client = client.clone();
-            let semaphore = semaphore.clone();
+            let c = Arc::clone(&client); // clone for this async block
 
-            futures.push(async move {
-                if let Ok(_permit) = semaphore.acquire().await {
-                    client.execute_enhanced_request(req).await
+            futs.push(async move {
+                if let Some(_guard) = InFlightGuard::try_acquire() {
+                    // _guard keeps INFLIGHT counter incremented for the duration
+                    c.execute_enhanced_request(req).await.map_err(|e| e)
                 } else {
-                    Err(anyhow::Error::msg("Rate limit"))
+                    Err(anyhow!("Rate limit"))
                 }
             });
         }
 
-        let mut collected = Vec::new();
-        while let Some(result) = futures.next().await {
-            collected.push(result);
+
+        let mut results = Vec::with_capacity(MAX_BATCH);
+        while let Some(res) = futs.next().await {
+            results.push(res);
         }
-        collected
+        results
     });
+
+    let results = RUNTIME.block_on(handle).unwrap_or_default();
 
     let mut json = Vec::with_capacity(results.len() * 256);
     json.push(b'[');
 
     for (i, result) in results.into_iter().enumerate() {
         if i > 0 { json.push(b','); }
-
         match result {
-            Ok(response) => {
-                if simd_json::to_writer(&mut json, &response).is_err() {
+            Ok(resp) => {
+                if simd_json::to_writer(&mut json, &resp).is_err() {
                     json.extend_from_slice(b"{\"error\":\"Serialize\"}");
                 }
             }
             Err(_) => json.extend_from_slice(b"{\"error\":\"Failed\"}"),
         }
     }
-    json.push(b']');
 
+    json.push(b']');
     ByteBuffer::from_vec(json)
 }
 
@@ -207,7 +227,18 @@ pub extern "C" fn free_string(ptr: *mut c_char) {
 
 #[no_mangle]
 pub extern "C" fn get_stats() -> ByteBuffer {
-    let available = SEMAPHORE.get().map(|s| s.available_permits()).unwrap_or(0);
-    let stats = format!("{{\"available\":{},\"max\":{}}}", available, MAX_CONCURRENT);
-    ByteBuffer::from_vec(stats.into_bytes())
+    let current = INFLIGHT.load(Ordering::Relaxed);
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(b"{\"in_flight\":");
+
+    let mut itoa_buffer = itoa::Buffer::new();
+    let formatted = itoa_buffer.format(current);
+    buf.extend_from_slice(formatted.as_bytes());
+
+    buf.extend_from_slice(b",\"max\":");
+    let formatted = itoa_buffer.format(MAX_CONCURRENT);
+    buf.extend_from_slice(formatted.as_bytes());
+
+    buf.push(b'}');
+    ByteBuffer::from_vec(buf)
 }

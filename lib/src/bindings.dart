@@ -1,4 +1,3 @@
-// bindings.dart
 import 'dart:async';
 import 'dart:collection';
 import 'dart:ffi';
@@ -16,17 +15,18 @@ class RustHttpException implements Exception {
   String toString() => 'RustHttpException: $message';
 }
 
+// Updated to use Int8 instead of Utf8 for compatibility with Rust's c_char
 typedef InitHttpClientFunc = Bool Function();
-typedef ExecuteRequestBytesFunc = ByteBuffer Function(Pointer<Utf8>);
-typedef ExecuteBatchRequestsBytesFunc = ByteBuffer Function(Pointer<Utf8>);
+typedef ExecuteRequestBytesFunc = ByteBuffer Function(Pointer<Int8>);
+typedef ExecuteBatchRequestsBytesFunc = ByteBuffer Function(Pointer<Int8>);
 typedef FreeByteBufferFunc = Void Function(ByteBuffer);
-typedef FreeStringFunc = Void Function(Pointer<Utf8>);
+typedef FreeStringFunc = Void Function(Pointer<Int8>);
 
 typedef InitHttpClient = bool Function();
-typedef ExecuteRequestBytes = ByteBuffer Function(Pointer<Utf8>);
-typedef ExecuteBatchRequestsBytes = ByteBuffer Function(Pointer<Utf8>);
+typedef ExecuteRequestBytes = ByteBuffer Function(Pointer<Int8>);
+typedef ExecuteBatchRequestsBytes = ByteBuffer Function(Pointer<Int8>);
 typedef FreeByteBuffer = void Function(ByteBuffer);
-typedef FreeString = void Function(Pointer<Utf8>);
+typedef FreeString = void Function(Pointer<Int8>);
 
 class ByteBuffer extends Struct {
   external Pointer<Uint8> ptr;
@@ -105,7 +105,7 @@ class NativeLibrary {
   late ExecuteRequestBytes _executeRequestBytes;
   late ExecuteBatchRequestsBytes _executeBatchRequestsBytes;
   late FreeByteBuffer _freeByteBuffer;
-  late FreeString _freeString;
+  // Removed _freeString as it's not used with Dart-allocated strings
 
   // Singleton instance for each isolate
   static NativeLibrary? _instance;
@@ -147,10 +147,7 @@ class NativeLibrary {
           .asFunction();
       FFILogger.debug('Found free_byte_buffer');
 
-      _freeString = _lib
-          .lookup<NativeFunction<FreeStringFunc>>('free_string')
-          .asFunction();
-      FFILogger.debug('Found free_string');
+      // Removed free_string lookup as it's not needed for Dart-allocated strings
 
       FFILogger.info('Initializing HTTP client...');
       final initResult = _initHttpClient();
@@ -179,7 +176,7 @@ class NativeLibrary {
         'execute_request_bytes': ExecuteRequestBytesFunc,
         'execute_batch_requests_bytes': ExecuteBatchRequestsBytesFunc,
         'free_byte_buffer': FreeByteBufferFunc,
-        'free_string': FreeStringFunc,
+        // Removed free_string from verification as it's not used
       };
 
       for (final entry in functions.entries) {
@@ -246,7 +243,7 @@ class NativeLibrary {
     FFILogger.debug('Executing HTTP request');
     FFILogger.debug('Request JSON length: ${requestJson.length} characters');
 
-    final requestPtr = requestJson.toNativeUtf8();
+    final requestPtr = requestJson.toNativeUtf8().cast<Int8>(); // Cast to Int8 for Rust compatibility
     FFILogger.debug('Allocated UTF8 string at address: ${requestPtr.address}');
 
     ByteBuffer? buffer;
@@ -270,17 +267,26 @@ class NativeLibrary {
 
       FFILogger.debug('Converting buffer to TypedData...');
       final data = buffer.ptr.asTypedList(buffer.length);
-      FFILogger.debug('TypedData created, decoding UTF8...');
 
-      final response = utf8.decode(data, allowMalformed: true);
+      // Direct UTF-8 decoding - Rust already handled JSON parsing
+      FFILogger.debug('Decoding UTF8 response...');
+      final response = utf8.decode(data);
       FFILogger.debug('Successfully decoded response (${response.length} characters)');
 
-      FFILogger.debug('Parsing JSON response...');
-      final responseMap = jsonDecode(response);
-      if (responseMap is Map<String, dynamic> && responseMap.containsKey('error')) {
-        final errorMsg = responseMap['error'];
-        FFILogger.error('Rust function returned error: $errorMsg');
-        throw RustHttpException(errorMsg);
+      // Simple error check without full JSON parsing
+      if (response.contains('"error":')) {
+        // Quick check for error field
+        try {
+          final errorJson = jsonDecode(response);
+          if (errorJson is Map<String, dynamic> && errorJson.containsKey('error')) {
+            final errorMsg = errorJson['error'].toString();
+            FFILogger.error('Rust function returned error: $errorMsg');
+            throw RustHttpException(errorMsg);
+          }
+        } catch (e) {
+          FFILogger.warning('Error parsing error response: $e');
+          // If we can't parse the error, just return the response as-is
+        }
       }
 
       FFILogger.debug('Request executed successfully');
@@ -305,7 +311,7 @@ class NativeLibrary {
       // Ensure UTF8 string is freed
       try {
         FFILogger.debug('Freeing UTF8 string at address: ${requestPtr.address}');
-        calloc.free(requestPtr);
+        calloc.free(requestPtr.cast<Utf8>()); // Cast back to Utf8 for proper freeing
         FFILogger.debug('UTF8 string freed successfully');
       } catch (e) {
         FFILogger.error('Failed to free UTF8 string', e);
@@ -324,7 +330,7 @@ class NativeLibrary {
     FFILogger.debug('Executing batch HTTP requests');
     FFILogger.debug('Batch requests JSON length: ${requestsJson.length} characters');
 
-    final requestPtr = requestsJson.toNativeUtf8();
+    final requestPtr = requestsJson.toNativeUtf8().cast<Int8>(); // Cast to Int8 for Rust compatibility
     FFILogger.debug('Allocated UTF8 string at address: ${requestPtr.address}');
 
     ByteBuffer? buffer;
@@ -348,17 +354,30 @@ class NativeLibrary {
 
       FFILogger.debug('Converting buffer to TypedData...');
       final data = buffer.ptr.asTypedList(buffer.length);
-      FFILogger.debug('TypedData created, decoding UTF8...');
 
-      final response = utf8.decode(data, allowMalformed: true);
-      FFILogger.debug('Successfully decoded batch response (${response.length} characters)');
+      // Direct UTF-8 decoding - Rust already handled JSON parsing
+      FFILogger.debug('Decoding UTF8 response...');
+      final response = utf8.decode(data);
+      FFILogger.debug('Successfully decoded response (${response.length} characters)');
 
-      FFILogger.debug('Parsing JSON response...');
-      final responseMap = jsonDecode(response);
-      if (responseMap is Map<String, dynamic> && responseMap.containsKey('error')) {
-        final errorMsg = responseMap['error'];
-        FFILogger.error('Rust function returned error: $errorMsg');
-        throw RustHttpException(errorMsg);
+      // Simple error check without full JSON parsing
+      if (response.contains('"error":')) {
+        // Quick check for error field in batch response
+        try {
+          final responseList = jsonDecode(response);
+          if (responseList is List) {
+            for (final item in responseList) {
+              if (item is Map<String, dynamic> && item.containsKey('error')) {
+                final errorMsg = item['error'].toString();
+                FFILogger.error('Rust function returned error in batch: $errorMsg');
+                throw RustHttpException(errorMsg);
+              }
+            }
+          }
+        } catch (e) {
+          FFILogger.warning('Error parsing batch error response: $e');
+          // If we can't parse the error, just return the response as-is
+        }
       }
 
       FFILogger.debug('Batch requests executed successfully');
@@ -383,7 +402,7 @@ class NativeLibrary {
       // Ensure UTF8 string is freed
       try {
         FFILogger.debug('Freeing UTF8 string at address: ${requestPtr.address}');
-        calloc.free(requestPtr);
+        calloc.free(requestPtr.cast<Utf8>()); // Cast back to Utf8 for proper freeing
         FFILogger.debug('UTF8 string freed successfully');
       } catch (e) {
         FFILogger.error('Failed to free UTF8 string', e);

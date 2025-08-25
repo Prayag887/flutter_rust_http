@@ -64,14 +64,12 @@ impl fmt::Debug for HttpClient {
 impl HttpClient {
     pub fn new() -> Self {
        let client = reqwest::Client::builder()
-           .pool_max_idle_per_host(1)              // Mobile apps rarely need >1 connection per host
-           .pool_idle_timeout(Duration::from_secs(20))
+           .pool_max_idle_per_host(20)
+           .pool_idle_timeout(Duration::from_secs(90))
+           .tcp_keepalive(Duration::from_secs(30))
            .tcp_nodelay(true)
            .timeout(Duration::from_secs(10))       // Mobile users expect fast responses
            .connect_timeout(Duration::from_secs(3))
-           .http2_keep_alive_interval(Duration::from_secs(20))
-           .http2_keep_alive_timeout(Duration::from_secs(8))
-           .http2_keep_alive_while_idle(true)
            .use_rustls_tls()
            .build()
            .unwrap();

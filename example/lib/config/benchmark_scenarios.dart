@@ -9,8 +9,8 @@ class BenchmarkScenarios {
       icon: Icons.video_library,
       method: 'GET',
       endpoint: 'https://jsonplaceholder.typicode.com/posts',
-      concurrentRequests: 10,
-      totalRequests: 100,
+      concurrentRequests: 1,
+      totalRequests: 50,
       enableComplexParsing: true,
     ),
 
@@ -20,7 +20,7 @@ class BenchmarkScenarios {
       icon: Icons.people,
       method: 'GET',
       endpoint: 'https://api.github.com/users',
-      concurrentRequests: 2,  // Reduced from 30
+      concurrentRequests: 1,  // Reduced from 30
       totalRequests: 20,      // Reduced from 300
       enableComplexParsing: true,
       timeout: Duration(seconds: 10),
@@ -37,8 +37,8 @@ class BenchmarkScenarios {
         'userId': 1,
         'timestamp': '{{timestamp}}',
       },
-      concurrentRequests: 5,  // Reduced from 100
-      totalRequests: 50,      // Reduced from 1000
+      concurrentRequests: 1,
+      totalRequests: 50,
     ),
 
     BenchmarkScenario(
@@ -47,7 +47,7 @@ class BenchmarkScenarios {
       icon: Icons.comment,
       method: 'GET',
       endpoint: 'https://jsonplaceholder.typicode.com/comments',
-      concurrentRequests: 5,  // Reduced from 75
+      concurrentRequests: 1,  // Reduced from 75
       totalRequests: 50,      // Reduced from 750
       enableComplexParsing: true,
     ),
@@ -69,8 +69,8 @@ class BenchmarkScenarios {
       icon: Icons.refresh,
       method: 'GET',
       endpoint: 'https://httpbin.org/uuid',
-      concurrentRequests: 10,
-      totalRequests: 50,
+      concurrentRequests: 1,
+      totalRequests: 100,
       enableCacheBusting: true,
     ),
 
@@ -80,7 +80,7 @@ class BenchmarkScenarios {
       icon: Icons.image,
       method: 'GET',
       endpoint: 'https://httpbin.org/json', // Returns actual JSON
-      concurrentRequests: 5,
+      concurrentRequests: 1,
       totalRequests: 25,
       headers: {'Accept': 'application/json'},
     ),
@@ -99,7 +99,7 @@ class BenchmarkScenarios {
           'user_id': '{{user_id}}',
         },
       },
-      concurrentRequests: 5,  // Reduced from 40
+      concurrentRequests: 1,  // Reduced from 40
       totalRequests: 25,      // Reduced from 400
     ),
 
@@ -116,7 +116,7 @@ class BenchmarkScenarios {
           'type': 'application/json',
         },
       },
-      concurrentRequests: 2,  // Reduced from 10
+      concurrentRequests: 1,  // Reduced from 10
       totalRequests: 10,      // Reduced from 100
       timeout: Duration(seconds: 30),
     ),

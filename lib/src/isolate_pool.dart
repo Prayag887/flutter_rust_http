@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:isolate';
 import 'package:isolate/isolate.dart';
 
 class IsolatePool {
   final int _poolSize;
   final List<IsolateRunner> _isolates = [];
-  final Queue<Completer<void>> _available = Queue();
+  final List<bool> _busy = [];
 
   IsolatePool(this._poolSize);
 
@@ -14,21 +13,25 @@ class IsolatePool {
     for (int i = 0; i < _poolSize; i++) {
       final isolate = await IsolateRunner.spawn();
       _isolates.add(isolate);
-      _available.add(Completer()..complete());
+      _busy.add(false);
     }
   }
 
   Future<R> run<R, P>(FutureOr<R> Function(P argument) function, P argument) async {
-    while (_available.isEmpty) {
-      await Future.delayed(Duration(milliseconds: 10));
+    // Wait for a free isolate
+    int idx;
+    while (true) {
+      idx = _busy.indexOf(false);
+      if (idx != -1) break;
+      await Future.delayed(Duration(milliseconds: 1));
     }
 
-    final availableCompleter = _available.removeFirst();
+    _busy[idx] = true;
     try {
-      final result = await _isolates[_available.length].run(function, argument);
+      final result = await _isolates[idx].run(function, argument);
       return result;
     } finally {
-      _available.add(Completer()..complete());
+      _busy[idx] = false;
     }
   }
 
@@ -37,6 +40,6 @@ class IsolatePool {
       await isolate.close();
     }
     _isolates.clear();
-    _available.clear();
+    _busy.clear();
   }
 }

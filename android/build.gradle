@@ -34,6 +34,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
+    buildFeatures {
+        prefab = true
+    }
+
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_11
     }
@@ -48,8 +52,9 @@ android {
     }
 
     dependencies {
-        testImplementation("org.jetbrains.kotlin:kotlin-test")
-        testImplementation("org.mockito:mockito-core:5.0.0")
+        testImplementation 'org.jetbrains.kotlin:kotlin-test'
+        testImplementation 'org.mockito:mockito-core:5.0.0'
+        implementation 'io.github.vvb2060.ndk:boringssl:20250114'
     }
 
     testOptions {
@@ -57,9 +62,9 @@ android {
             useJUnitPlatform()
 
             testLogging {
-               events "passed", "skipped", "failed", "standardOut", "standardError"
-               outputs.upToDateWhen {false}
-               showStandardStreams = true
+                events 'passed', 'skipped', 'failed', 'standardOut', 'standardError'
+                outputs.upToDateWhen { false }
+                showStandardStreams = true
             }
         }
     }

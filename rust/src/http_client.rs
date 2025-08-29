@@ -8,6 +8,7 @@ use reqwest::{Client, Version};
 use std::sync::Arc;
 use std::time::Instant;
 use anyhow::Result;
+use futures_util::stream::{self, StreamExt};
 
 pub struct HttpClient {
     client: Arc<Client>,
@@ -30,7 +31,7 @@ impl HttpClient {
         }
     }
 
-    /// Executes an HTTP request with optimized latency for mobile
+    /// Executes a single HTTP request with optimized latency
     pub async fn execute_request(&self, request: HttpRequest<'_>) -> Result<HttpResponse> {
         let start_time = Instant::now();
 
@@ -50,9 +51,8 @@ impl HttpClient {
             req_builder = req_builder.body(body.to_string());
         }
 
-        if request.http3_only {
-            req_builder = req_builder.version(Version::HTTP_3);
-        }
+        // Force HTTP/2 only (no HTTP/3)
+        req_builder = req_builder.version(Version::HTTP_2);
 
         let response = req_builder.send().await?;
         let status_code = response.status().as_u16();
@@ -72,22 +72,32 @@ impl HttpClient {
         })
     }
 
+    /// Executes multiple requests concurrently with a limit
+    pub async fn execute_requests_batch(&self, requests: Vec<HttpRequest<'_>>, concurrency: usize) -> Vec<HttpResponse> {
+        let responses = stream::iter(requests.into_iter())
+            .map(|req| self.execute_request(req))
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
+
+        responses.into_iter().filter_map(Result::ok).collect()
+    }
+
     fn version_to_string(version: Version) -> &'static str {
         match version {
             Version::HTTP_09 => "HTTP/0.9",
             Version::HTTP_10 => "HTTP/1.0",
             Version::HTTP_11 => "HTTP/1.1",
             Version::HTTP_2 => "HTTP/2",
-            Version::HTTP_3 => "HTTP/3",
             _ => "Unknown",
         }
     }
 
     /// Prewarm connections to a list of URLs
     pub async fn prewarm(&self, urls: &[&str]) {
-        for &url in urls {
-            let _ = self.client.get(url).send().await;
-        }
+        futures_util::future::join_all(
+            urls.iter().map(|&url| self.client.get(url).send())
+        ).await;
     }
 }
 

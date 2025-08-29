@@ -1,81 +1,97 @@
 import 'dart:ffi';
 import 'dart:io';
-import 'dart:isolate';
+import 'dart:typed_data';
+import 'dart:convert';
 import 'package:ffi/ffi.dart';
 
-typedef InitHttpClientFunc = Bool Function();
-typedef ExecuteRequestFunc = Pointer<Utf8> Function(Pointer<Utf8>);
-typedef FreeStringFunc = Void Function(Pointer<Utf8>);
+// Optimized library loading with platform-specific paths
+final DynamicLibrary _lib = (() {
+  if (Platform.isAndroid) {
+    return DynamicLibrary.open("libflutter_rust_http.so");
+  } else if (Platform.isIOS) {
+    return DynamicLibrary.process();
+  } else if (Platform.isLinux) {
+    return DynamicLibrary.open("libflutter_rust_http.so");
+  } else if (Platform.isWindows) {
+    return DynamicLibrary.open("flutter_rust_http.dll");
+  } else if (Platform.isMacOS) {
+    return DynamicLibrary.open("libflutter_rust_http.dylib");
+  } else {
+    return DynamicLibrary.process();
+  }
+})();
 
+/// Rust Buffer struct - optimized with packed layout
+class Buffer extends Struct {
+  external Pointer<Uint8> ptr;
+
+  @Uint64()
+  external int len;
+}
+
+/// FFI bindings - C function signatures
+typedef init_http_client_c = Int8 Function();
+typedef execute_request_binary_c = Buffer Function(Pointer<Uint8> ptr, Uint64 len);
+typedef execute_requests_batch_binary_c = Buffer Function(Pointer<Uint8> ptr, Uint64 len);
+typedef free_buffer_c = Void Function(Pointer<Uint8> ptr, Uint64 len);
+typedef shutdown_http_client_c = Void Function();
+
+/// Dart-friendly typedefs - optimized for performance
 typedef InitHttpClient = bool Function();
-typedef ExecuteRequest = Pointer<Utf8> Function(Pointer<Utf8>);
-typedef FreeString = void Function(Pointer<Utf8>);
+typedef ExecuteRequestBinary = Buffer Function(Pointer<Uint8> ptr, int len);
+typedef ExecuteRequestsBatchBinary = Buffer Function(Pointer<Uint8> ptr, int len);
+typedef FreeBuffer = void Function(Pointer<Uint8> ptr, int len);
+typedef ShutdownHttpClient = void Function();
 
-class NativeLibrary {
-  late DynamicLibrary _lib;
-  late InitHttpClient _initHttpClient;
-  late ExecuteRequest _executeRequest;
-  late FreeString _freeString;
+/// Pre-cached function pointers for maximum performance
+class _FFICache {
+  static late final int Function() _initHttpClientRaw;
+  static late final ExecuteRequestBinary _executeRequestBinary;
+  static late final ExecuteRequestsBatchBinary _executeRequestsBatchBinary;
+  static late final FreeBuffer _freeBuffer;
+  static late final ShutdownHttpClient _shutdownHttpClient;
 
-  NativeLibrary._();
+  static bool _initialized = false;
 
-  // Factory constructor for creating instances in isolates
-  static NativeLibrary createForIsolate() {
-    final instance = NativeLibrary._();
-    instance._lib = _loadLibrary();
-    instance._initHttpClient = instance._lib
-        .lookup<NativeFunction<InitHttpClientFunc>>('init_http_client')
-        .asFunction();
-    instance._executeRequest = instance._lib
-        .lookup<NativeFunction<ExecuteRequestFunc>>('execute_request')
-        .asFunction();
-    instance._freeString = instance._lib
-        .lookup<NativeFunction<FreeStringFunc>>('free_string')
-        .asFunction();
-
-    instance._initHttpClient();
-    return instance;
-  }
-
-  // Static method for main isolate verification (doesn't actually load the library)
-  static Future<bool> verifyLibrary() async {
-    try {
-      _loadLibrary();
-      return true;
-    } catch (e) {
-      return false;
+  static void _ensureInitialized() {
+    if (!_initialized) {
+      _initHttpClientRaw = _lib.lookupFunction<init_http_client_c, int Function()>('init_http_client');
+      _executeRequestBinary = _lib.lookupFunction<execute_request_binary_c, ExecuteRequestBinary>('execute_request_binary');
+      _executeRequestsBatchBinary = _lib.lookupFunction<execute_requests_batch_binary_c, ExecuteRequestsBatchBinary>('execute_requests_batch_binary');
+      _freeBuffer = _lib.lookupFunction<free_buffer_c, FreeBuffer>('free_buffer');
+      _shutdownHttpClient = _lib.lookupFunction<shutdown_http_client_c, ShutdownHttpClient>('shutdown_http_client');
+      _initialized = true;
     }
-  }
-
-  static DynamicLibrary _loadLibrary() {
-    if (Platform.isAndroid) {
-      return DynamicLibrary.open('libflutter_rust_http.so');
-    } else if (Platform.isIOS) {
-      return DynamicLibrary.process();
-    } else if (Platform.isLinux) {
-      return DynamicLibrary.open('libflutter_rust_http.so');
-    } else if (Platform.isMacOS) {
-      return DynamicLibrary.open('libflutter_rust_http.dylib');
-    } else if (Platform.isWindows) {
-      return DynamicLibrary.open('flutter_rust_http.dll');
-    } else {
-      throw UnsupportedError('Platform not supported');
-    }
-  }
-
-  String executeRequest(String requestJson) {
-    final requestPtr = requestJson.toNativeUtf8();
-    final responsePtr = _executeRequest(requestPtr);
-    final response = responsePtr.toDartString();
-    calloc.free(requestPtr);
-    _freeString(responsePtr);
-    return response;
   }
 }
 
-// Isolate entry point function
-String isolateHttpRequest(String requestJson) {
-  // Each isolate creates its own NativeLibrary instance
-  final nativeLib = NativeLibrary.createForIsolate();
-  return nativeLib.executeRequest(requestJson);
+/// Optimized function wrappers with inline pragmas and caching
+@pragma('vm:prefer-inline')
+bool initHttpClient() {
+  _FFICache._ensureInitialized();
+  return _FFICache._initHttpClientRaw() != 0;
+}
+
+@pragma('vm:prefer-inline')
+Buffer executeRequestBinary(Pointer<Uint8> ptr, int len) {
+  _FFICache._ensureInitialized();
+  return _FFICache._executeRequestBinary(ptr, len);
+}
+
+@pragma('vm:prefer-inline')
+Buffer executeRequestsBatchBinary(Pointer<Uint8> ptr, int len) {
+  _FFICache._ensureInitialized();
+  return _FFICache._executeRequestsBatchBinary(ptr, len);
+}
+
+@pragma('vm:prefer-inline')
+void freeBuffer(Pointer<Uint8> ptr, int len) {
+  _FFICache._ensureInitialized();
+  _FFICache._freeBuffer(ptr, len);
+}
+
+@pragma('vm:prefer-inline')
+void shutdownHttpClient() {
+  _FFICache._ensureInitialized();
+  _FFICache._shutdownHttpClient();
 }

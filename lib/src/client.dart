@@ -1,176 +1,219 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:meta/meta.dart';
+import 'dart:isolate';
+import 'dart:typed_data';
+import 'package:ffi/ffi.dart';
+
 import 'bindings.dart';
-import 'isolate_pool.dart';
-import 'models.dart';
-import 'exceptions.dart';
+import 'dart:ffi';
+
+class _WorkerRequest {
+  final String id;
+  final String type;
+  final Uint8List payload;
+
+  _WorkerRequest(this.id, this.type, this.payload);
+}
+
+class _WorkerResponse {
+  final String id;
+  final String? result;
+  final String? error;
+
+  _WorkerResponse(this.id, {this.result, this.error});
+}
+
+extension _Uint8ListPtr on Uint8List {
+  @pragma('vm:prefer-inline')
+  Pointer<Uint8> allocatePointer() {
+    final ptr = malloc<Uint8>(length);
+    ptr.asTypedList(length).setRange(0, length, this);
+    return ptr;
+  }
+}
+
+void _workerIsolateEntry(SendPort mainSendPort) {
+  final receivePort = ReceivePort();
+  bool initialized = false;
+
+  // Send port immediately
+  mainSendPort.send(receivePort.sendPort);
+
+  receivePort.listen((message) {
+    if (message is _WorkerRequest) {
+      try {
+        if (!initialized) {
+          initialized = initHttpClient();
+          if (!initialized) {
+            mainSendPort.send(_WorkerResponse(message.id, error: 'Init failed'));
+            return;
+          }
+        }
+
+        final ptr = message.payload.allocatePointer();
+        try {
+          final buffer = message.type == 'single'
+              ? executeRequestBinary(ptr, message.payload.length)
+              : executeRequestsBatchBinary(ptr, message.payload.length);
+
+          if (buffer.ptr.address == 0) {
+            mainSendPort.send(_WorkerResponse(message.id, error: 'Null response'));
+            return;
+          }
+
+          try {
+            final result = utf8.decode(buffer.ptr.asTypedList(buffer.len));
+            mainSendPort.send(_WorkerResponse(message.id, result: result));
+          } finally {
+            freeBuffer(buffer.ptr, buffer.len);
+          }
+        } finally {
+          malloc.free(ptr);
+        }
+      } catch (e) {
+        mainSendPort.send(_WorkerResponse(message.id, error: e.toString()));
+      }
+    } else if (message == 'shutdown') {
+      if (initialized)
+      receivePort.close();
+    }
+  });
+}
 
 class FlutterRustHttp {
-  static final FlutterRustHttp _instance = FlutterRustHttp._internal();
-  static IsolatePool? _isolatePool;
-  static bool _isInitialized = false;
+  static final FlutterRustHttp instance = FlutterRustHttp._private();
+  FlutterRustHttp._private();
 
-  FlutterRustHttp._internal();
+  bool _initialized = false;
+  Isolate? _workerIsolate;
+  SendPort? _workerSendPort;
+  final Map<String, Completer<String>> _pendingRequests = <String, Completer<String>>{};
+  int _requestIdCounter = 0;
+  Completer<void>? _initCompleter;
+  ReceivePort? _receivePort;
 
-  factory FlutterRustHttp() => _instance;
+  Future<void> init() async {
+    if (_initialized) return;
+    if (_initCompleter != null) {
+      await _initCompleter!.future;
+      return;
+    }
 
-  static Future<void> initialize({int isolatePoolSize = 4}) async {
-    if (_isInitialized) return;
+    _initCompleter = Completer<void>();
+    await _startWorkerIsolate();
+  }
 
-    try {
-      // Verify the library can be loaded (but don't actually load it in main isolate, it block ui)
-      final canLoadLibrary = await NativeLibrary.verifyLibrary();
-      if (!canLoadLibrary) {
-        throw Exception('Failed to verify native library');
+  Future<void> _startWorkerIsolate() async {
+    _receivePort = ReceivePort();
+
+    _receivePort!.listen((message) {
+      if (message is SendPort && !_initialized) {
+        _workerSendPort = message;
+        _initialized = true;
+        _initCompleter?.complete();
+        _initCompleter = null;
+      } else if (message is _WorkerResponse) {
+        final completer = _pendingRequests.remove(message.id);
+        if (completer != null && !completer.isCompleted) {
+          if (message.error != null) {
+            completer.completeError(Exception(message.error!));
+          } else {
+            completer.complete(message.result!);
+          }
+        }
       }
+    });
 
-      // Create isolate pool that will load the library in each worker isolate
-      _isolatePool = IsolatePool(isolatePoolSize);
-      await _isolatePool!.initialize();
-      _isInitialized = true;
-    } catch (e) {
-      _isInitialized = false;
-      rethrow;
-    }
+    _workerIsolate = await Isolate.spawn(_workerIsolateEntry, _receivePort!.sendPort);
   }
 
-  static void ensureInitialized() {
-    if (!_isInitialized) {
-      throw Exception('FlutterRustHttp must be initialized first');
-    }
-    if (_isolatePool == null) {
-      throw Exception('Isolate pool not initialized');
-    }
+  @pragma('vm:prefer-inline')
+  Future<String> _sendRequest(String type, Uint8List payload) async {
+    if (!_initialized) await init();
+
+    final id = 'req_${_requestIdCounter++}';
+    final completer = Completer<String>();
+    _pendingRequests[id] = completer;
+    _workerSendPort!.send(_WorkerRequest(id, type, payload));
+    return completer.future;
   }
 
-  Future<HttpResponse> request(
-      String url, {
-        String method = 'GET',
-        Map<String, String> headers = const {},
-        dynamic body,
-        Map<String, dynamic> queryParameters = const {},
-        Duration? timeout,
-        bool followRedirects = true,
-        int maxRedirects = 5,
-        Duration? connectTimeout,
-        Duration? readTimeout,
-        Duration? writeTimeout,
-        bool autoReferer = true,
-        bool decompress = true,
-        bool http3Only = false,
-      }) async {
-    ensureInitialized();
+  @pragma('vm:prefer-inline')
+  Future<Map<String, dynamic>> request(Map<String, dynamic> payload) async {
+    final jsonBytes = utf8.encode(jsonEncode(payload));
+    final result = await _sendRequest('single', Uint8List.fromList(jsonBytes));
+    return jsonDecode(result) as Map<String, dynamic>;
+  }
 
-    final request = HttpRequest(
-      url: url,
-      method: method,
-      headers: headers,
-      body: body is String ? body : body != null ? jsonEncode(body) : null,
-      queryParams: queryParameters.map((key, value) => MapEntry(key, value.toString())),
-      timeoutMs: timeout?.inMilliseconds ?? 30000,
-      followRedirects: followRedirects,
-      maxRedirects: maxRedirects,
-      connectTimeoutMs: connectTimeout?.inMilliseconds ?? 10000,
-      readTimeoutMs: readTimeout?.inMilliseconds ?? 30000,
-      writeTimeoutMs: writeTimeout?.inMilliseconds ?? 30000,
-      autoReferer: autoReferer,
-      decompress: decompress,
-      http3Only: http3Only,
-    );
+  @pragma('vm:prefer-inline')
+  Future<List<Map<String, dynamic>>> requestBatch(List<Map<String, dynamic>> payloads) async {
+    final jsonBytes = utf8.encode(jsonEncode(payloads));
+    final result = await _sendRequest('batch', Uint8List.fromList(jsonBytes));
+    return (jsonDecode(result) as List).cast<Map<String, dynamic>>();
+  }
 
-    try {
-      final isolatePool = _isolatePool!;
+  @pragma('vm:prefer-inline')
+  Future<Map<String, dynamic>> get(String url, {Map<String, dynamic>? headers}) {
+    return request(_createCompleteRequest(url, 'GET', headers));
+  }
 
-      // Use the isolate entry point function that creates its own NativeLibrary
-      final responseJson = await isolatePool.run<String, String>(
-        isolateHttpRequest, // Use the global function from bindings.dart
-        jsonEncode(request.toJson()),
-      );
+  @pragma('vm:prefer-inline')
+  Future<Map<String, dynamic>> post(String url, {Map<String, dynamic>? headers, dynamic body}) {
+    final req = _createCompleteRequest(url, 'POST', headers);
+    if (body != null) req['body'] = body;
+    return request(req);
+  }
 
-      if (responseJson.isEmpty) {
-        throw Exception('Empty response from native library');
+  @pragma('vm:prefer-inline')
+  Future<Map<String, dynamic>> put(String url, {Map<String, dynamic>? headers, dynamic body}) {
+    final req = _createCompleteRequest(url, 'PUT', headers);
+    if (body != null) req['body'] = body;
+    return request(req);
+  }
+
+  @pragma('vm:prefer-inline')
+  Future<Map<String, dynamic>> delete(String url, {Map<String, dynamic>? headers}) {
+    return request(_createCompleteRequest(url, 'DELETE', headers));
+  }
+
+  @pragma('vm:prefer-inline')
+  Map<String, dynamic> _createCompleteRequest(String url, String method, Map<String, dynamic>? headers) {
+    return <String, dynamic>{
+      'url': url,
+      'method': method,
+      'headers': headers ?? <String, String>{},
+      'body': null,
+      'query_params': <String, String>{},
+      'timeout_ms': 30000,
+      'follow_redirects': true,
+      'max_redirects': 5,
+      'connect_timeout_ms': 15000,
+      'read_timeout_ms': 30000,
+      'write_timeout_ms': 30000,
+      'auto_referer': true,
+      'decompress': true,
+      'http3_only': false,
+    };
+  }
+
+  Future<void> shutdown() async {
+    if (!_initialized) return;
+
+    for (final completer in _pendingRequests.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(Exception('Shutdown'));
       }
-
-      final responseMap = jsonDecode(responseJson);
-      return HttpResponse.fromJson(responseMap);
-    } catch (e) {
-      throw HttpException('Request failed: $e');
     }
-  }
+    _pendingRequests.clear();
 
-  Future<HttpResponse> get(
-      String url, {
-        Map<String, String> headers = const {},
-        Map<String, dynamic> queryParameters = const {},
-        Duration? timeout,
-      }) async {
-    return request(
-      url,
-      method: 'GET',
-      headers: headers,
-      queryParameters: queryParameters,
-      timeout: timeout,
-    );
-  }
+    _workerSendPort?.send('shutdown');
+    _workerIsolate?.kill(priority: Isolate.immediate);
+    _receivePort?.close();
 
-  Future<HttpResponse> post(
-      String url, {
-        Map<String, String> headers = const {},
-        dynamic body,
-        Map<String, dynamic> queryParameters = const {},
-        Duration? timeout,
-      }) async {
-    return request(
-      url,
-      method: 'POST',
-      headers: headers,
-      body: body,
-      queryParameters: queryParameters,
-      timeout: timeout,
-    );
-  }
-
-  Future<HttpResponse> put(
-      String url, {
-        Map<String, String> headers = const {},
-        dynamic body,
-        Map<String, dynamic> queryParameters = const {},
-        Duration? timeout,
-      }) async {
-    return request(
-      url,
-      method: 'PUT',
-      headers: headers,
-      body: body,
-      queryParameters: queryParameters,
-      timeout: timeout,
-    );
-  }
-
-  Future<HttpResponse> delete(
-      String url, {
-        Map<String, String> headers = const {},
-        dynamic body,
-        Map<String, dynamic> queryParameters = const {},
-        Duration? timeout,
-      }) async {
-    return request(
-      url,
-      method: 'DELETE',
-      headers: headers,
-      body: body,
-      queryParameters: queryParameters,
-      timeout: timeout,
-    );
-  }
-
-  Future<void> close() async {
-    final isolatePool = _isolatePool;
-    if (isolatePool != null) {
-      await isolatePool.close();
-      _isolatePool = null;
-    }
-    _isInitialized = false;
+    _workerIsolate = null;
+    _workerSendPort = null;
+    _receivePort = null;
+    _initialized = false;
+    _initCompleter = null;
   }
 }

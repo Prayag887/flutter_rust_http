@@ -19,18 +19,18 @@ class HttpRequest {
   HttpRequest({
     required this.url,
     required this.method,
-    required this.headers,
+    this.headers = const {},
     this.body,
-    required this.queryParams,
-    required this.timeoutMs,
-    required this.followRedirects,
-    required this.maxRedirects,
-    required this.connectTimeoutMs,
-    required this.readTimeoutMs,
-    required this.writeTimeoutMs,
-    required this.autoReferer,
-    required this.decompress,
-    required this.http3Only,
+    this.queryParams = const {},
+    this.timeoutMs = 30000,
+    this.followRedirects = true,
+    this.maxRedirects = 5,
+    this.connectTimeoutMs = 10000,
+    this.readTimeoutMs = 30000,
+    this.writeTimeoutMs = 30000,
+    this.autoReferer = true,
+    this.decompress = true,
+    this.http3Only = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -61,23 +61,29 @@ class HttpResponse {
 
   HttpResponse({
     required this.statusCode,
-    required this.headers,
-    required this.body,
-    required this.version,
-    required this.url,
-    required this.elapsedMs,
+    this.headers = const {},
+    this.body = '',
+    this.version = '1.1',
+    this.url = '',
+    this.elapsedMs = 0,
   });
 
   factory HttpResponse.fromJson(Map<String, dynamic> json) => HttpResponse(
-    statusCode: json['status_code'],
-    headers: Map<String, String>.from(json['headers']),
-    body: json['body'],
-    version: json['version'],
-    url: json['url'],
-    elapsedMs: json['elapsed_ms'],
+    statusCode: json['status_code'] ?? 0,
+    headers: Map<String, String>.from(json['headers'] ?? {}),
+    body: json['body'] ?? '',
+    version: json['version'] ?? '1.1',
+    url: json['url'] ?? '',
+    elapsedMs: json['elapsed_ms'] ?? 0,
   );
 
-  dynamic get json => jsonDecode(body);
+  dynamic get json {
+    try {
+      return jsonDecode(body);
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 class HttpError {
@@ -92,8 +98,8 @@ class HttpError {
   });
 
   factory HttpError.fromJson(Map<String, dynamic> json) => HttpError(
-    code: json['code'],
-    message: json['message'],
+    code: json['code'] ?? '',
+    message: json['message'] ?? '',
     details: json['details'],
   );
 }

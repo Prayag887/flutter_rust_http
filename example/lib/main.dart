@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_rust_http/flutter_rust_http.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
+import 'package:collection/collection.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Initialize the Rust HTTP client
   await FlutterRustHttp.instance.init();
   runApp(const MyApp());
 }
@@ -18,384 +18,502 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'HTTP Performance Benchmark',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const BenchmarkPage(),
+      title: 'Live HTTP Benchmark',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+      ),
+      home: const LiveBenchmarkPage(),
     );
   }
 }
 
-class BenchmarkPage extends StatefulWidget {
-  const BenchmarkPage({super.key});
+class LiveBenchmarkPage extends StatefulWidget {
+  const LiveBenchmarkPage({super.key});
 
   @override
-  State<BenchmarkPage> createState() => _BenchmarkPageState();
+  State<LiveBenchmarkPage> createState() => _LiveBenchmarkPageState();
 }
 
-class _BenchmarkPageState extends State<BenchmarkPage> {
-  final Dio dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 15),
-    receiveTimeout: const Duration(seconds: 30),
-    sendTimeout: const Duration(seconds: 30),
+class _LiveBenchmarkPageState extends State<LiveBenchmarkPage> {
+  final Dio _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 10),
+    receiveTimeout: const Duration(seconds: 15),
+    sendTimeout: const Duration(seconds: 10),
     headers: {
-      'User-Agent': 'Flutter-Performance-Benchmark/1.0',
+      'User-Agent': 'Flutter-Live-Benchmark/1.0',
       'Accept': 'application/json',
+      'Connection': 'keep-alive',
     },
+    persistentConnection: true,
   ));
 
-  // Get the singleton instance
-  FlutterRustHttp get rustClient => FlutterRustHttp.instance;
+  final FlutterRustHttp _rustClient = FlutterRustHttp.instance;
 
-  bool running = false;
-  double progress = 0;
-  String currentTest = '';
-  final List<TestResult> results = [];
+  // State variables
+  bool _isRunning = false;
+  String _currentStatus = 'Ready to start';
+  String _currentTest = '';
+  int _currentIteration = 0;
+  int _totalIterations = 0;
+  double _progress = 0;
 
-  final scenarios = [
-    TestScenario('Single Request', 'https://jsonplaceholder.typicode.com/posts/1', 1, 50),
-    TestScenario('Small Batch (5)', 'https://jsonplaceholder.typicode.com/posts', 5, 20),
-    TestScenario('Medium Batch (20)', 'https://jsonplaceholder.typicode.com/posts', 20, 10),
-    TestScenario('Large Batch (50)', 'https://jsonplaceholder.typicode.com/posts', 50, 5),
-    TestScenario('High Concurrency (100)', 'https://jsonplaceholder.typicode.com/posts', 100, 3),
-    TestScenario('Mixed Endpoints (20)', 'mixed', 20, 18),
-    TestScenario('Image Downloads (10)', 'https://picsum.photos/400/300', 10, 5),
-    TestScenario('Large JSON (30)', 'https://jsonplaceholder.typicode.com/photos', 30, 5),
+  // Live data for real-time visualization
+  final List<LiveDataPoint> _liveRustData = [];
+  final List<LiveDataPoint> _liveDioData = [];
+  final List<ComparisonPoint> _comparisonData = [];
+  final List<ThroughputPoint> _throughputData = [];
+
+  // Current test metrics (updates in real-time)
+  double _currentRustAvg = 0;
+  double _currentDioAvg = 0;
+  double _rustSuccessRate = 0;
+  double _dioSuccessRate = 0;
+  int _rustRequests = 0;
+  int _dioRequests = 0;
+
+  // Test scenarios
+  final List<BenchmarkScenario> _scenarios = [
+    BenchmarkScenario('Small JSON', 'https://httpbin.org/json', 15, 'json'),
+    BenchmarkScenario('User Data', 'https://jsonplaceholder.typicode.com/users/1', 15, 'user'),
+    BenchmarkScenario('Posts List', 'https://jsonplaceholder.typicode.com/posts', 12, 'posts'),
+    BenchmarkScenario('POST Request', 'https://httpbin.org/post', 10, 'post'),
   ];
 
-  // Helper method to create complete request objects
-  Map<String, dynamic> _createCompleteRequest(String url, {String method = 'GET'}) {
+  Future<void> runLiveBenchmark() async {
+    setState(() {
+      _isRunning = true;
+      _clearAllData();
+      _progress = 0;
+      _currentStatus = 'Starting live benchmark...';
+    });
+
+    try {
+      // Calculate total iterations for progress tracking
+      _totalIterations = _scenarios.fold(0, (sum, scenario) => sum + (scenario.iterations * 2)); // *2 for both clients
+      int completedIterations = 0;
+
+      for (int scenarioIndex = 0; scenarioIndex < _scenarios.length; scenarioIndex++) {
+        final scenario = _scenarios[scenarioIndex];
+
+        setState(() {
+          _currentTest = scenario.name;
+          _currentStatus = 'Warming up ${scenario.name}...';
+        });
+
+        // Warmup phase
+        await _performWarmup(scenario);
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        // Test Rust with live updates
+        setState(() {
+          _currentStatus = 'Testing Rust - ${scenario.name}';
+        });
+
+        for (int i = 0; i < scenario.iterations; i++) {
+          setState(() {
+            _currentIteration = i + 1;
+            _progress = completedIterations / _totalIterations;
+          });
+
+          await _performLiveRustTest(scenario, scenarioIndex);
+          completedIterations++;
+
+          // Small delay for UI updates
+          await Future.delayed(const Duration(milliseconds: 150));
+        }
+
+        // Brief pause between clients
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        // Test Dio with live updates
+        setState(() {
+          _currentStatus = 'Testing Dio - ${scenario.name}';
+        });
+
+        for (int i = 0; i < scenario.iterations; i++) {
+          setState(() {
+            _currentIteration = i + 1;
+            _progress = completedIterations / _totalIterations;
+          });
+
+          await _performLiveDioTest(scenario, scenarioIndex);
+          completedIterations++;
+
+          // Small delay for UI updates
+          await Future.delayed(const Duration(milliseconds: 150));
+        }
+
+        // Update comparison data after each scenario
+        _updateComparisonData();
+
+        // Longer pause between scenarios
+        if (scenarioIndex < _scenarios.length - 1) {
+          await Future.delayed(const Duration(seconds: 1));
+        }
+      }
+
+      setState(() {
+        _currentStatus = 'Live benchmark complete! 🎉';
+        _progress = 1.0;
+      });
+
+    } catch (e) {
+      setState(() {
+        _currentStatus = 'Error: $e';
+      });
+    } finally {
+      setState(() {
+        _isRunning = false;
+      });
+    }
+  }
+
+  void _clearAllData() {
+    _liveRustData.clear();
+    _liveDioData.clear();
+    _comparisonData.clear();
+    _throughputData.clear();
+    _currentRustAvg = 0;
+    _currentDioAvg = 0;
+    _rustSuccessRate = 0;
+    _dioSuccessRate = 0;
+    _rustRequests = 0;
+    _dioRequests = 0;
+  }
+
+  Future<void> _performWarmup(BenchmarkScenario scenario) async {
+    for (int i = 0; i < 2; i++) {
+      try {
+        await _rustClient.request(_createRustRequest(scenario));
+        await _dio.get(scenario.url);
+        await Future.delayed(const Duration(milliseconds: 100));
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _performLiveRustTest(BenchmarkScenario scenario, int scenarioIndex) async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      dynamic result;
+
+      if (scenario.type == 'post') {
+        result = await _performRustPost(scenario);
+      } else {
+        result = await _rustClient.request(_createRustRequest(scenario));
+      }
+
+      stopwatch.stop();
+      final latencyMs = stopwatch.elapsedMicroseconds / 1000.0;
+
+      // Process response and calculate throughput
+      final processedData = _processResponse(result);
+      final dataSize = _calculateDataSize(processedData);
+      final throughput = dataSize / (latencyMs / 1000.0); // bytes/sec
+
+      // Update live data
+      setState(() {
+        final now = DateTime.now();
+        _liveRustData.add(LiveDataPoint(
+          timestamp: now,
+          latency: latencyMs,
+          scenario: scenario.name,
+          scenarioIndex: scenarioIndex,
+          success: true,
+        ));
+
+        _throughputData.add(ThroughputPoint(
+          timestamp: now,
+          rustThroughput: throughput / 1024, // KB/s
+          dioThroughput: 0, // Will be updated when Dio runs
+          scenario: scenario.name,
+        ));
+
+        _rustRequests++;
+        _updateRustMetrics();
+      });
+
+    } catch (e) {
+      stopwatch.stop();
+      final latencyMs = stopwatch.elapsedMicroseconds / 1000.0;
+
+      setState(() {
+        _liveRustData.add(LiveDataPoint(
+          timestamp: DateTime.now(),
+          latency: latencyMs,
+          scenario: scenario.name,
+          scenarioIndex: scenarioIndex,
+          success: false,
+        ));
+        _rustRequests++;
+        _updateRustMetrics();
+      });
+
+      debugPrint('Rust error in ${scenario.name}: $e');
+    }
+  }
+
+  Future<void> _performLiveDioTest(BenchmarkScenario scenario, int scenarioIndex) async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      dynamic result;
+
+      if (scenario.type == 'post') {
+        final response = await _dio.post(
+          scenario.url,
+          data: {
+            'title': 'Live Test Post',
+            'body': 'Testing Dio performance live',
+            'userId': 1,
+          },
+        );
+        result = response.data;
+      } else {
+        final response = await _dio.get(scenario.url);
+        result = response.data;
+      }
+
+      stopwatch.stop();
+      final latencyMs = stopwatch.elapsedMicroseconds / 1000.0;
+
+      // Process response and calculate throughput
+      final processedData = _processResponse(result);
+      final dataSize = _calculateDataSize(processedData);
+      final throughput = dataSize / (latencyMs / 1000.0); // bytes/sec
+
+      // Update live data
+      setState(() {
+        final now = DateTime.now();
+        _liveDioData.add(LiveDataPoint(
+          timestamp: now,
+          latency: latencyMs,
+          scenario: scenario.name,
+          scenarioIndex: scenarioIndex,
+          success: true,
+        ));
+
+        // Update throughput data (find matching timestamp or create new)
+        final matchingThroughput = _throughputData.lastWhereOrNull(
+              (point) => point.scenario == scenario.name && point.dioThroughput == 0,
+        );
+        if (matchingThroughput != null) {
+          matchingThroughput.dioThroughput = throughput / 1024; // KB/s
+        } else {
+          _throughputData.add(ThroughputPoint(
+            timestamp: now,
+            rustThroughput: 0,
+            dioThroughput: throughput / 1024,
+            scenario: scenario.name,
+          ));
+        }
+
+        _dioRequests++;
+        _updateDioMetrics();
+      });
+
+    } catch (e) {
+      stopwatch.stop();
+      final latencyMs = stopwatch.elapsedMicroseconds / 1000.0;
+
+      setState(() {
+        _liveDioData.add(LiveDataPoint(
+          timestamp: DateTime.now(),
+          latency: latencyMs,
+          scenario: scenario.name,
+          scenarioIndex: scenarioIndex,
+          success: false,
+        ));
+        _dioRequests++;
+        _updateDioMetrics();
+      });
+
+      debugPrint('Dio error in ${scenario.name}: $e');
+    }
+  }
+
+  Map<String, dynamic> _createRustRequest(BenchmarkScenario scenario) {
     return {
-      'url': url,
-      'method': method,
-      'headers': <String, String>{}, // Empty map instead of dynamic
+      'url': scenario.url,
+      'method': 'GET',
+      'headers': {
+        'User-Agent': 'Flutter-Live-Benchmark/1.0',
+        'Accept': 'application/json',
+      },
       'body': null,
-      'query_params': <String, String>{}, // Empty map
-      'timeout_ms': 30000,
-      'follow_redirects': true,
-      'max_redirects': 5,
-      'connect_timeout_ms': 15000,
-      'read_timeout_ms': 30000,
-      'write_timeout_ms': 30000,
-      'auto_referer': true,
-      'decompress': true,
-      'http3_only': false,
+      'query_params': {},
     };
   }
 
+  Future<dynamic> _performRustPost(BenchmarkScenario scenario) async {
+    final request = {
+      'url': scenario.url,
+      'method': 'POST',
+      'headers': {
+        'User-Agent': 'Flutter-Live-Benchmark/1.0',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      'body': jsonEncode({
+        'title': 'Live Test Post',
+        'body': 'Testing Rust performance live',
+        'userId': 1,
+      }),
+      'query_params': {},
+    };
 
-  Future<void> runBenchmarkSuite() async {
-    setState(() {
-      running = true;
-      results.clear();
-      progress = 0;
-    });
-
-    int totalTests = scenarios.length;
-
-    for (int i = 0; i < scenarios.length; i++) {
-      final scenario = scenarios[i];
-      setState(() {
-        currentTest = '${scenario.name} (${scenario.concurrent}x concurrent, ${scenario.iterations} rounds)';
-        progress = i / totalTests;
-      });
-
-      final result = await _runScenario(scenario);
-      setState(() => results.add(result));
-    }
-
-    setState(() {
-      running = false;
-      progress = 1.0;
-      currentTest = 'Completed';
-    });
+    return await _rustClient.request(request);
   }
 
-  Future<TestResult> _runScenario(TestScenario scenario) async {
-    final dioStats = BenchmarkStats();
-    final rustStats = BenchmarkStats();
-
-    // Warmup request
-    try {
-      final warmupUrl = scenario.url == 'mixed'
-          ? 'https://jsonplaceholder.typicode.com/posts/1'
-          : scenario.url;
-      final warmupRequest = _createCompleteRequest(warmupUrl);
-      await rustClient.request(warmupRequest);
-    } catch (_) {}
-
-    // Run RUST tests first (all iterations)
-    setState(() {
-      currentTest = '${scenario.name} - Running Rust HTTP tests...';
-    });
-
-    for (int round = 0; round < scenario.iterations; round++) {
-      await _testRustConcurrent(scenario, rustStats);
+  dynamic _processResponse(dynamic response) {
+    if (response is List) {
+      return response.take(5).map((item) => _normalizeData(item)).toList();
     }
-
-    // Then run DART/DIO tests (all iterations)
-    setState(() {
-      currentTest = '${scenario.name} - Running Dart/Dio tests...';
-    });
-
-    for (int round = 0; round < scenario.iterations; round++) {
-      await _testDioConcurrent(scenario, dioStats);
-    }
-
-    return TestResult(
-      name: scenario.name,
-      dioStats: dioStats.finalize(),
-      rustStats: rustStats.finalize(),
-    );
+    return _normalizeData(response);
   }
 
-  Future<void> _testRustConcurrent(TestScenario scenario, BenchmarkStats stats) async {
-    final stopwatch = Stopwatch()..start();
+  Map<String, dynamic> _normalizeData(dynamic data) {
+    if (data is! Map<String, dynamic>) return {'raw': data};
+
+    return {
+      'id': data['id'],
+      'title': data['title'] ?? data['name'] ?? 'N/A',
+      'content': data['body'] ?? data['email'] ?? 'N/A',
+      'processedAt': DateTime.now().millisecondsSinceEpoch,
+    };
+  }
+
+  int _calculateDataSize(dynamic data) {
     try {
-      List<Map<String, dynamic>> requests;
-      if (scenario.url == 'mixed') {
-        final baseUrls = [
-          'https://jsonplaceholder.typicode.com/posts',
-          'https://jsonplaceholder.typicode.com/users',
-          'https://jsonplaceholder.typicode.com/albums',
-          'https://jsonplaceholder.typicode.com/todos',
-        ];
-        requests = List.generate(scenario.concurrent, (i) =>
-            _createCompleteRequest(baseUrls[i % baseUrls.length]));
-      } else {
-        requests = List.generate(scenario.concurrent, (_) =>
-            _createCompleteRequest(scenario.url));
-      }
-
-      // Use the existing requestBatch method from your client
-      final responses = await rustClient.requestBatch(requests);
-
-      stopwatch.stop();
-
-      int totalBytes = 0;
-      int successCount = 0;
-      for (final response in responses) {
-        final statusCode = response['status_code'] ?? 0;
-        if (statusCode >= 200 && statusCode < 300) successCount++;
-        final body = response['body'] ?? '';
-        totalBytes += utf8.encode(body.toString()).length;
-      }
-
-      stats.addBatchResult(stopwatch.elapsedMicroseconds, totalBytes, successCount, scenario.concurrent);
+      return utf8.encode(jsonEncode(data)).length;
     } catch (e) {
-      stopwatch.stop();
-      stats.addBatchResult(stopwatch.elapsedMicroseconds, 0, 0, scenario.concurrent);
-      print('Rust HTTP error: $e'); // Debug logging
+      return 0;
     }
   }
 
-  Future<void> _testDioConcurrent(TestScenario scenario, BenchmarkStats stats) async {
-    final stopwatch = Stopwatch()..start();
-    try {
-      List<Future<Response>> futures;
-      if (scenario.url == 'mixed') {
-        final urls = [
-          'https://jsonplaceholder.typicode.com/posts',
-          'https://jsonplaceholder.typicode.com/users',
-          'https://jsonplaceholder.typicode.com/albums',
-          'https://jsonplaceholder.typicode.com/todos',
-        ];
-        futures = List.generate(scenario.concurrent, (i) => dio.get(urls[i % urls.length]));
-      } else {
-        futures = List.generate(scenario.concurrent, (_) => dio.get(scenario.url));
-      }
-      final responses = await Future.wait(futures);
-
-      // ADD: Simulate the same parsing overhead as Rust to make benchmark fair
-      final List<Map<String, dynamic>> processedResponses = [];
-      for (final response in responses) {
-        // Create response structure similar to Rust HttpResponse
-        final responseMap = {
-          'status_code': response.statusCode ?? 0,
-          'headers': response.headers.map.map((key, value) => MapEntry(key, value.join(', '))),
-          'body': response.data is String ? response.data : jsonEncode(response.data),
-          'version': '2.0',
-          'url': response.requestOptions.uri.toString(),
-          'elapsed_ms': stopwatch.elapsedMilliseconds,
-        };
-
-        // Serialize to JSON (like Rust does)
-        final jsonString = jsonEncode(responseMap);
-
-        // Parse it back (like Dart does with Rust response)
-        final parsedResponse = jsonDecode(jsonString) as Map<String, dynamic>;
-        processedResponses.add(parsedResponse);
-      }
-
-      stopwatch.stop();
-
-      // Calculate stats using processed responses (fair comparison)
-      int totalBytes = 0;
-      int successCount = 0;
-      for (final response in processedResponses) {
-        final statusCode = response['status_code'] as int;
-        if (statusCode >= 200 && statusCode < 300) successCount++;
-        final body = response['body'] as String;
-        totalBytes += utf8.encode(body).length;
-      }
-
-      stats.addBatchResult(stopwatch.elapsedMicroseconds, totalBytes, successCount, scenario.concurrent);
-    } catch (e) {
-      stopwatch.stop();
-      stats.addBatchResult(stopwatch.elapsedMicroseconds, 0, 0, scenario.concurrent);
-      print('Dio error: $e'); // Debug logging
+  void _updateRustMetrics() {
+    final successfulRequests = _liveRustData.where((point) => point.success).toList();
+    if (successfulRequests.isNotEmpty) {
+      _currentRustAvg = successfulRequests.map((point) => point.latency).average;
+      _rustSuccessRate = successfulRequests.length / _liveRustData.length;
     }
   }
 
-  @override
-  void dispose() {
-    // Optional: Close the client when the widget is disposed
-    // rustClient.shutdown(); // Use shutdown instead of close
-    super.dispose();
+  void _updateDioMetrics() {
+    final successfulRequests = _liveDioData.where((point) => point.success).toList();
+    if (successfulRequests.isNotEmpty) {
+      _currentDioAvg = successfulRequests.map((point) => point.latency).average;
+      _dioSuccessRate = successfulRequests.length / _liveDioData.length;
+    }
+  }
+
+  void _updateComparisonData() {
+    // Group data by scenario and calculate averages
+    final rustByScenario = _liveRustData.where((point) => point.success).groupListsBy((point) => point.scenario);
+    final dioByScenario = _liveDioData.where((point) => point.success).groupListsBy((point) => point.scenario);
+
+    for (final scenarioName in rustByScenario.keys) {
+      final rustLatencies = rustByScenario[scenarioName]?.map((point) => point.latency).toList() ?? [];
+      final dioLatencies = dioByScenario[scenarioName]?.map((point) => point.latency).toList() ?? [];
+
+      if (rustLatencies.isNotEmpty && dioLatencies.isNotEmpty) {
+        // Remove existing data for this scenario and add updated
+        _comparisonData.removeWhere((point) => point.scenario == scenarioName);
+        _comparisonData.add(ComparisonPoint(
+          scenario: scenarioName,
+          rustAvg: rustLatencies.average,
+          dioAvg: dioLatencies.average,
+        ));
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('HTTP Performance Benchmark - Fair Comparison'), elevation: 2),
+      appBar: AppBar(
+        title: const Text('Live HTTP Benchmark'),
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        actions: [
+          if (_isRunning)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: CircularProgressIndicator(
+                value: _progress,
+                backgroundColor: Colors.white24,
+                strokeWidth: 3,
+              ),
+            ),
+        ],
+      ),
       body: Column(
         children: [
-          _buildControls(),
-          if (running) _buildProgress(),
-          Expanded(child: _buildResults()),
+          _buildLiveControlPanel(),
+          if (_isRunning) _buildLiveStatusBar(),
+          Expanded(child: _buildLiveGraphs()),
         ],
       ),
     );
   }
 
-  Widget _buildControls() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              ElevatedButton(
-                onPressed: running ? null : runBenchmarkSuite,
-                child: Text(running ? 'Running...' : 'Start Fair Benchmark'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Fair comparison: Both Dio and Rust do HTTP + JSON serialization/parsing\n'
-                'This measures pure HTTP performance differences',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProgress() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          LinearProgressIndicator(value: progress),
-          const SizedBox(height: 8),
-          Text('Running: $currentTest'),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildResults() {
-    if (results.isEmpty) {
-      return const Center(
-          child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.speed, size: 64, color: Colors.grey),
-                SizedBox(height: 16),
-                Text('No results yet'),
-                Text('Run the fair benchmark to see accurate performance comparisons')
-              ]
-          )
-      );
-    }
-
-    return ListView(
-        children: [
-          _buildSummaryCard(),
-          _buildSummaryChart(),
-          _buildThroughputChart(),
-          ...results.map((r) => _buildResultCard(r))
-        ]
-    );
-  }
-
-  Widget _buildSummaryCard() {
-    if (results.isEmpty) return const SizedBox.shrink();
-
-    double totalRustWins = 0;
-    double totalDioWins = 0;
-    double totalTies = 0;
-
-    for (final result in results) {
-      final throughputSpeedup = result.rustStats.requestsPerSecond / result.dioStats.requestsPerSecond;
-      if (throughputSpeedup > 1.1) {
-        totalRustWins++;
-      } else if (throughputSpeedup < 0.9) {
-        totalDioWins++;
-      } else {
-        totalTies++;
-      }
-    }
-
-    final avgRustLatency = results.map((r) => r.rustStats.avgLatency / 1000).reduce((a, b) => a + b) / results.length;
-    final avgDioLatency = results.map((r) => r.dioStats.avgLatency / 1000).reduce((a, b) => a + b) / results.length;
-    final avgRustThroughput = results.map((r) => r.rustStats.requestsPerSecond).reduce((a, b) => a + b) / results.length;
-    final avgDioThroughput = results.map((r) => r.dioStats.requestsPerSecond).reduce((a, b) => a + b) / results.length;
-
+  Widget _buildLiveControlPanel() {
     return Card(
-      margin: const EdgeInsets.all(8),
-      color: Colors.blue[50],
+      margin: const EdgeInsets.all(16),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('📊 Benchmark Summary', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 12),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildSummaryMetric('Rust Wins', totalRustWins.toInt().toString(), Colors.orange),
-                _buildSummaryMetric('Dio Wins', totalDioWins.toInt().toString(), Colors.blue),
-                _buildSummaryMetric('Ties', totalTies.toInt().toString(), Colors.grey),
+                Icon(
+                  Icons.timeline,
+                  size: 32,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Live Performance Monitor',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        'Real-time HTTP performance visualization',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 16),
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Average Latency:', style: Theme.of(context).textTheme.titleSmall),
-                      Text('Rust: ${avgRustLatency.toStringAsFixed(1)}ms', style: const TextStyle(color: Colors.orange)),
-                      Text('Dio: ${avgDioLatency.toStringAsFixed(1)}ms', style: const TextStyle(color: Colors.blue)),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Average Throughput:', style: Theme.of(context).textTheme.titleSmall),
-                      Text('Rust: ${avgRustThroughput.toStringAsFixed(1)} req/s', style: const TextStyle(color: Colors.orange)),
-                      Text('Dio: ${avgDioThroughput.toStringAsFixed(1)} req/s', style: const TextStyle(color: Colors.blue)),
-                    ],
-                  ),
-                ),
+                _buildLiveMetric('Rust Avg', '${_currentRustAvg.toStringAsFixed(1)}ms', Colors.orange),
+                _buildLiveMetric('Dio Avg', '${_currentDioAvg.toStringAsFixed(1)}ms', Colors.blue),
+                _buildLiveMetric('Requests', '${_rustRequests + _dioRequests}', Colors.green),
               ],
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _isRunning ? null : runLiveBenchmark,
+              icon: _isRunning ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              ) : const Icon(Icons.play_arrow),
+              label: Text(_isRunning ? 'Running...' : 'Start Live Benchmark'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
             ),
           ],
         ),
@@ -403,273 +521,398 @@ class _BenchmarkPageState extends State<BenchmarkPage> {
     );
   }
 
-  Widget _buildSummaryMetric(String label, String value, Color color) {
+  Widget _buildLiveMetric(String label, String value, Color color) {
     return Column(
       children: [
-        Text(value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
       ],
     );
   }
 
-  Widget _buildSummaryChart() {
-    final chartData = results.map((r) => ChartDataPoint(
-        r.name.split(' ').first,
-        r.dioStats.avgLatency / 1000,
-        r.rustStats.avgLatency / 1000
-    )).toList();
-
+  Widget _buildLiveStatusBar() {
     return Container(
-        height: 300,
-        padding: const EdgeInsets.all(16),
-        child: SfCartesianChart(
-            title: ChartTitle(text: 'Response Time Comparison (ms) - Lower is Better'),
-            primaryXAxis: CategoryAxis(),
-            primaryYAxis: NumericAxis(title: AxisTitle(text: 'Milliseconds')),
-            legend: Legend(isVisible: true),
-            series: [
-              ColumnSeries<ChartDataPoint, String>(
-                  name: 'Dio',
-                  dataSource: chartData,
-                  xValueMapper: (d, _) => d.label,
-                  yValueMapper: (d, _) => d.dioValue,
-                  color: Colors.blue
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _currentStatus,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-              ColumnSeries<ChartDataPoint, String>(
-                  name: 'Rust HTTP',
-                  dataSource: chartData,
-                  xValueMapper: (d, _) => d.label,
-                  yValueMapper: (d, _) => d.rustValue,
-                  color: Colors.orange
-              )
-            ]
-        )
+              Text(
+                '${(_progress * 100).toStringAsFixed(0)}%',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: _progress,
+            backgroundColor: Colors.white24,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          if (_currentTest.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              '$_currentTest - Iteration $_currentIteration',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ],
+      ),
     );
   }
 
-  Widget _buildThroughputChart() {
-    final chartData = results.map((r) => ChartDataPoint(
-        r.name.split(' ').first,
-        r.dioStats.requestsPerSecond,
-        r.rustStats.requestsPerSecond
-    )).toList();
+  Widget _buildLiveGraphs() {
+    if (_liveRustData.isEmpty && _liveDioData.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.timeline,
+              size: 80,
+              color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.5),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Ready for Live Monitoring',
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Start the benchmark to see real-time performance graphs\n'
+                  'Watch as each request is processed live!',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
+        ),
+      );
+    }
 
-    return Container(
-        height: 300,
-        padding: const EdgeInsets.all(16),
-        child: SfCartesianChart(
-            title: ChartTitle(text: 'Throughput Comparison (requests/sec) - Higher is Better'),
-            primaryXAxis: CategoryAxis(),
-            primaryYAxis: NumericAxis(title: AxisTitle(text: 'Requests/sec')),
-            legend: Legend(isVisible: true),
-            series: [
-              ColumnSeries<ChartDataPoint, String>(
-                  name: 'Dio',
-                  dataSource: chartData,
-                  xValueMapper: (d, _) => d.label,
-                  yValueMapper: (d, _) => d.dioValue,
-                  color: Colors.blue
-              ),
-              ColumnSeries<ChartDataPoint, String>(
-                  name: 'Rust HTTP',
-                  dataSource: chartData,
-                  xValueMapper: (d, _) => d.label,
-                  yValueMapper: (d, _) => d.rustValue,
-                  color: Colors.orange
-              )
-            ]
-        )
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _buildLiveLatencyChart(),
+        const SizedBox(height: 16),
+        _buildLiveThroughputChart(),
+        const SizedBox(height: 16),
+        if (_comparisonData.isNotEmpty) _buildLiveComparisonChart(),
+        const SizedBox(height: 16),
+        _buildLiveStatistics(),
+      ],
     );
   }
 
-  Widget _buildResultCard(TestResult result) {
-    final latencySpeedup = result.dioStats.avgLatency / result.rustStats.avgLatency;
-    final throughputSpeedup = result.rustStats.requestsPerSecond / result.dioStats.requestsPerSecond;
-    final winner = throughputSpeedup > 1.1 ? 'Rust' : throughputSpeedup < 0.9 ? 'Dio' : 'Tie';
-    final winnerColor = winner == 'Rust' ? Colors.orange : winner == 'Dio' ? Colors.blue : Colors.grey;
-
+  Widget _buildLiveLatencyChart() {
     return Card(
-      margin: const EdgeInsets.all(8),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(child: Text(result.name, style: Theme.of(context).textTheme.titleLarge)),
-                  Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                          color: winnerColor.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: winnerColor.withOpacity(0.3))
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            winner == 'Rust' ? Icons.rocket_launch :
-                            winner == 'Dio' ? Icons.flash_on : Icons.remove,
-                            color: winnerColor,
-                            size: 16,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(winner, style: TextStyle(color: winnerColor, fontWeight: FontWeight.bold)),
-                        ],
-                      )
-                  ),
-                ]
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Live Latency (ms)', style: Theme.of(context).textTheme.titleMedium),
+                Row(
+                  children: [
+                    Container(
+                      width: 12,
+                      height: 12,
+                      color: Colors.orange,
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('Rust'),
+                    const SizedBox(width: 12),
+                    Container(
+                      width: 12,
+                      height: 12,
+                      color: Colors.blue,
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('Dio'),
+                  ],
+                ),
+              ],
             ),
             const SizedBox(height: 16),
-            Row(
-                children: [
-                  Expanded(child: _buildClientStats('Dio', result.dioStats, Colors.blue)),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildClientStats('Rust', result.rustStats, Colors.orange))
-                ]
+            SizedBox(
+              height: 250,
+              child: SfCartesianChart(
+                primaryXAxis: DateTimeAxis(
+                  intervalType: DateTimeIntervalType.seconds,
+                  majorGridLines: const MajorGridLines(width: 0),
+                ),
+                primaryYAxis: NumericAxis(
+                  title: AxisTitle(text: 'Latency (ms)'),
+                  majorGridLines: const MajorGridLines(width: 0.5),
+                ),
+                tooltipBehavior: TooltipBehavior(enable: true),
+                series: [
+                  ScatterSeries<LiveDataPoint, DateTime>(
+                    name: 'Rust',
+                    dataSource: _liveRustData.where((point) => point.success).toList(),
+                    xValueMapper: (point, _) => point.timestamp,
+                    yValueMapper: (point, _) => point.latency,
+                    color: Colors.orange,
+                    markerSettings: const MarkerSettings(
+                      isVisible: true,
+                      width: 6,
+                      height: 6,
+                    ),
+                  ),
+                  ScatterSeries<LiveDataPoint, DateTime>(
+                    name: 'Dio',
+                    dataSource: _liveDioData.where((point) => point.success).toList(),
+                    xValueMapper: (point, _) => point.timestamp,
+                    yValueMapper: (point, _) => point.latency,
+                    color: Colors.blue,
+                    markerSettings: const MarkerSettings(
+                      isVisible: true,
+                      width: 6,
+                      height: 6,
+                    ),
+                  ),
+                  // Show failures as red X marks
+                  ScatterSeries<LiveDataPoint, DateTime>(
+                    name: 'Failures',
+                    dataSource: [..._liveRustData, ..._liveDioData].where((point) => !point.success).toList(),
+                    xValueMapper: (point, _) => point.timestamp,
+                    yValueMapper: (point, _) => point.latency,
+                    color: Colors.red,
+                    markerSettings: const MarkerSettings(
+                      isVisible: true,
+                      width: 8,
+                      height: 8,
+                      shape: DataMarkerType.triangle,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
-            _buildPerformanceMetrics(latencySpeedup, throughputSpeedup),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildPerformanceMetrics(double latencySpeedup, double throughputSpeedup) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-          color: Colors.grey[100],
-          borderRadius: BorderRadius.circular(8)
-      ),
-      child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
+  Widget _buildLiveThroughputChart() {
+    if (_throughputData.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
           children: [
-            _buildMetric('Latency Improvement', '${latencySpeedup.toStringAsFixed(2)}x',
-                latencySpeedup > 1.1 ? Colors.green : latencySpeedup < 0.9 ? Colors.red : Colors.grey),
-            _buildMetric('Throughput Improvement', '${throughputSpeedup.toStringAsFixed(2)}x',
-                throughputSpeedup > 1.1 ? Colors.green : throughputSpeedup < 0.9 ? Colors.red : Colors.grey),
-          ]
+            Text('Live Throughput (KB/s)', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: SfCartesianChart(
+                primaryXAxis: DateTimeAxis(
+                  intervalType: DateTimeIntervalType.seconds,
+                ),
+                primaryYAxis: NumericAxis(
+                  title: AxisTitle(text: 'Throughput (KB/s)'),
+                ),
+                series: [
+                  LineSeries<ThroughputPoint, DateTime>(
+                    name: 'Rust',
+                    dataSource: _throughputData.where((point) => point.rustThroughput > 0).toList(),
+                    xValueMapper: (point, _) => point.timestamp,
+                    yValueMapper: (point, _) => point.rustThroughput,
+                    color: Colors.orange,
+                    width: 2,
+                  ),
+                  LineSeries<ThroughputPoint, DateTime>(
+                    name: 'Dio',
+                    dataSource: _throughputData.where((point) => point.dioThroughput > 0).toList(),
+                    xValueMapper: (point, _) => point.timestamp,
+                    yValueMapper: (point, _) => point.dioThroughput,
+                    color: Colors.blue,
+                    width: 2,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildMetric(String label, String value, Color color) => Column(
+  Widget _buildLiveComparisonChart() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Text('Average Latency by Scenario', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: SfCartesianChart(
+                primaryXAxis: CategoryAxis(),
+                primaryYAxis: NumericAxis(title: AxisTitle(text: 'Average Latency (ms)')),
+                series: [
+                  ColumnSeries<ComparisonPoint, String>(
+                    name: 'Rust',
+                    dataSource: _comparisonData,
+                    xValueMapper: (point, _) => point.scenario,
+                    yValueMapper: (point, _) => point.rustAvg,
+                    color: Colors.orange,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                  ),
+                  ColumnSeries<ComparisonPoint, String>(
+                    name: 'Dio',
+                    dataSource: _comparisonData,
+                    xValueMapper: (point, _) => point.scenario,
+                    yValueMapper: (point, _) => point.dioAvg,
+                    color: Colors.blue,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLiveStatistics() {
+    final rustSuccessful = _liveRustData.where((point) => point.success).length;
+    final dioSuccessful = _liveDioData.where((point) => point.success).length;
+    final totalRequests = _liveRustData.length + _liveDioData.length;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Text('Live Statistics', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildStatColumn('Total Requests', totalRequests.toString(), Colors.green),
+                _buildStatColumn('Rust Success', '$rustSuccessful/${_liveRustData.length}', Colors.orange),
+                _buildStatColumn('Dio Success', '$dioSuccessful/${_liveDioData.length}', Colors.blue),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildStatColumn('Rust Success Rate', '${(_rustSuccessRate * 100).toStringAsFixed(1)}%', Colors.orange),
+                _buildStatColumn('Dio Success Rate', '${(_dioSuccessRate * 100).toStringAsFixed(1)}%', Colors.blue),
+                _buildStatColumn('Overall Winner',
+                    _currentRustAvg > 0 && _currentDioAvg > 0
+                        ? (_currentRustAvg < _currentDioAvg ? 'Rust' : 'Dio')
+                        : 'TBD',
+                    _currentRustAvg > 0 && _currentDioAvg > 0
+                        ? (_currentRustAvg < _currentDioAvg ? Colors.orange : Colors.blue)
+                        : Colors.grey),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatColumn(String label, String value, Color color) {
+    return Column(
       children: [
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color))
-      ]
-  );
-
-  Widget _buildClientStats(String name, ClientStats stats, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-          border: Border.all(color: color.withOpacity(0.3)),
-          borderRadius: BorderRadius.circular(8)
-      ),
-      child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(name, style: TextStyle(fontWeight: FontWeight.bold, color: color)),
-            const SizedBox(height: 8),
-            Text('Avg: ${(stats.avgLatency / 1000).toStringAsFixed(1)}ms'),
-            Text('Min: ${(stats.minLatency / 1000).toStringAsFixed(1)}ms'),
-            Text('Max: ${(stats.maxLatency / 1000).toStringAsFixed(1)}ms'),
-            Text('Throughput: ${stats.requestsPerSecond.toStringAsFixed(1)} req/s'),
-            Text('Success: ${(stats.successRate * 100).toStringAsFixed(1)}%'),
-            if (stats.avgThroughput > 0) Text('Data: ${_formatThroughput(stats.avgThroughput)}'),
-          ]
-      ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.bodySmall,
+          textAlign: TextAlign.center,
+        ),
+      ],
     );
-  }
-
-  String _formatThroughput(double bytesPerSec) {
-    if (bytesPerSec >= 1024 * 1024) return '${(bytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-    if (bytesPerSec >= 1024) return '${(bytesPerSec / 1024).toStringAsFixed(1)} KB/s';
-    return '${bytesPerSec.toStringAsFixed(0)} B/s';
   }
 }
 
-class TestScenario {
+// Data Models
+class BenchmarkScenario {
   final String name;
   final String url;
-  final int concurrent;
   final int iterations;
+  final String type;
 
-  TestScenario(this.name, this.url, this.concurrent, this.iterations);
+  BenchmarkScenario(this.name, this.url, this.iterations, this.type);
 }
 
-class TestResult {
-  final String name;
-  final ClientStats dioStats;
-  final ClientStats rustStats;
+class LiveDataPoint {
+  final DateTime timestamp;
+  final double latency;
+  final String scenario;
+  final int scenarioIndex;
+  final bool success;
 
-  TestResult({required this.name, required this.dioStats, required this.rustStats});
-}
-
-class ClientStats {
-  final double avgLatency;
-  final int minLatency;
-  final int maxLatency;
-  final double successRate;
-  final double avgThroughput;
-  final double requestsPerSecond;
-
-  ClientStats({
-    required this.avgLatency,
-    required this.minLatency,
-    required this.maxLatency,
-    required this.successRate,
-    required this.avgThroughput,
-    required this.requestsPerSecond
+  LiveDataPoint({
+    required this.timestamp,
+    required this.latency,
+    required this.scenario,
+    required this.scenarioIndex,
+    required this.success,
   });
 }
 
-class BenchmarkStats {
-  final List<int> batchLatencies = [];
-  final List<double> throughputs = [];
-  final List<double> requestsPerSecond = [];
-  int totalSuccesses = 0;
-  int totalRequests = 0;
+class ThroughputPoint {
+  final DateTime timestamp;
+  double rustThroughput;
+  double dioThroughput;
+  final String scenario;
 
-  void addBatchResult(int batchLatencyMicros, int totalBytes, int successCount, int requestCount) {
-    batchLatencies.add(batchLatencyMicros);
-    throughputs.add(totalBytes / (batchLatencyMicros / 1e6));
-    requestsPerSecond.add(requestCount / (batchLatencyMicros / 1e6));
-    totalSuccesses += successCount;
-    totalRequests += requestCount;
-  }
-
-  ClientStats finalize() {
-    if (batchLatencies.isEmpty) {
-      return ClientStats(
-          avgLatency: 0,
-          minLatency: 0,
-          maxLatency: 0,
-          successRate: 0,
-          avgThroughput: 0,
-          requestsPerSecond: 0
-      );
-    }
-    return ClientStats(
-      avgLatency: batchLatencies.reduce((a, b) => a + b) / batchLatencies.length,
-      minLatency: batchLatencies.reduce((a, b) => a < b ? a : b),
-      maxLatency: batchLatencies.reduce((a, b) => a > b ? a : b),
-      successRate: totalSuccesses / totalRequests,
-      avgThroughput: throughputs.reduce((a, b) => a + b) / throughputs.length,
-      requestsPerSecond: requestsPerSecond.reduce((a, b) => a + b) / requestsPerSecond.length,
-    );
-  }
+  ThroughputPoint({
+    required this.timestamp,
+    required this.rustThroughput,
+    required this.dioThroughput,
+    required this.scenario,
+  });
 }
 
-class ChartDataPoint {
-  final String label;
-  final double dioValue;
-  final double rustValue;
+class ComparisonPoint {
+  final String scenario;
+  final double rustAvg;
+  final double dioAvg;
 
-  ChartDataPoint(this.label, this.dioValue, this.rustValue);
+  ComparisonPoint({
+    required this.scenario,
+    required this.rustAvg,
+    required this.dioAvg,
+  });
 }
